@@ -232,7 +232,7 @@ def patch_ppo_std_annealing(agent, std_dev_annealing: bool, kwargs: dict | None 
     # Captured lazily on the first post_interaction, not here: this patch runs
     # at __init__, before C2RL's Phase A + pretraining. Capturing eagerly froze
     # "initial" at the yaml's initial_log_std, so a post-pretrain override
-    # (residual_pretrain_init_log_std) got silently reverted on the next
+    # (a post-construction override of log_std) got silently reverted on the next
     # post_interaction. Lazy = "initial" means what Phase B actually starts at.
     initial_log_std = None
 

@@ -105,7 +105,6 @@ agent:
   # is per-Minibatch, not on the epoch mean.
   kl_threshold: 0.016
   time_limit_bootstrap: true  # Bootstrap value at episode truncation instead of treating it as terminal
-  residual_contraction_pretrain: false
   rewards_shaper_scale: 1.0
   use_state_norm: false  # Off by default — see c2rl.py module docstring / rl_glue.make_base_rl_cfg
   use_value_norm: false    # Same, but for the value function's output (PPO only)

@@ -355,11 +355,6 @@ class CLActorModel(GaussianMixin, Model):
                                         encoder, encoder_hidden, encoder_stride)
         self.log_std_parameter = self.cl_actor.logstd
 
-        # Optional analytic baseline for residual RL (CVSTEMLQRBase). When set by
-        # C2RLAgent after Phase A, the mean becomes u_cvstem-lqr + feedback
-        # instead of urefs[0] + feedback. None keeps the default law.
-        self.base_controller = None
-
         if initial_log_std != 0.0:
             with torch.no_grad():
                 self.log_std_parameter.data.fill_(initial_log_std)
@@ -367,13 +362,9 @@ class CLActorModel(GaussianMixin, Model):
 
     def compute(self, inputs: dict, role: str = "policy"):
         state = inputs["observations"]
-        if self.base_controller is not None and getattr(self, "_eval_base_only", False):
-            # Controlled-comparison eval: bypass the residual to measure the pure
-            # analytic base on the identical frozen CMG the trained residual used.
-            return self.base_controller(state), {"log_std": self.log_std_parameter}
+        # u = urefs[0] + pi(s); the analytic-base warm-start has been removed.
         feedback, uref = self.cl_actor._feedback(state)
-        base = self.base_controller(state) if self.base_controller is not None else uref
-        return base + feedback, {"log_std": self.log_std_parameter}
+        return uref + feedback, {"log_std": self.log_std_parameter}
 
 
 # ─────────────────────────────────────────────────────────────────────────── #

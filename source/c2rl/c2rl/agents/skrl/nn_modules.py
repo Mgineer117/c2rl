@@ -193,57 +193,7 @@ class CholMetric(nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
-# CVSTEMLQRBase — analytic contraction controller as a residual-RL baseline
-# ─────────────────────────────────────────────────────────────────────────── #
 
-class CVSTEMLQRBase:
-    """The certified CV-STEM-LQR control law, packaged as a fixed baseline the
-    C2RL actor learns a residual on top of.
-
-        u_base = uref - K(x)·e,   K(x) = (1/r)·B(x)ᵀ·M(x),   M(x) = W(x)⁻¹,
-        e = wrap_diff(x - xref)
-
-    Byte-for-byte ``CVSTEMLQRAgent._compute_action_pretrained``: same Phase-A
-    frozen CMG, same analytic ``B(x)``, same ``R = r_scaler·I``. That controller
-    already scores near the analytic tracking floor (~0.9 AUC on car), yet C2RL
-    normally ignores it and learns feedback from scratch. As the baseline, the
-    policy starts there and PPO can only improve it (clamped reward, actuator
-    limits, preview, discrete-dt and nonlinear corrections the linear gain misses).
-
-    Deliberately not an ``nn.Module``: it references the frozen CMG but must not
-    register it as a policy submodule, which would double-count the CMG in the
-    policy's parameters/checkpoint and in the optimizer. No learnable parameters
-    — ``u_base`` is a fixed detached offset like ``uref``, so gradients flow only
-    through the residual.
-    """
-
-    def __init__(self, ccm_gen, get_f_and_B, *, r_scaler, w_lb, window: RefWindow,
-                 angle_idx=()):
-        self.ccm_gen = ccm_gen
-        self.get_f_and_B = get_f_and_B
-        self.r = float(r_scaler) + 1e-5           # strictly positive (mirrors cvstem_lqr.py)
-        self.w_lb = float(w_lb)
-        self.window = window
-        self.x_dim = window.x_dim
-        self.u_dim = window.u_dim
-        self.angle_idx = list(angle_idx or [])
-
-    def __call__(self, state: torch.Tensor) -> torch.Tensor:
-        # Analytic feedback is myopic: it needs only the current reference, so
-        # it reads xrefs[0]/urefs[0] and ignores the rest of the window.
-        x, xrefs, urefs = self.window.split(state)
-        xref, uref = xrefs[:, 0], urefs[:, 0]
-        with torch.no_grad():
-            _f, B, _ = self.get_f_and_B(x)
-            B = B.to(torch.float32)
-            raw_W, _ = self.ccm_gen(x)
-            W = bound_W(raw_W, self.w_lb, self.x_dim,
-                        getattr(self.ccm_gen, "bounded", False))
-            M = spd_inverse(W)                                   # (b, x, x)
-            K = (1.0 / self.r) * torch.bmm(B.transpose(1, 2), M)  # (b, u, x)
-            e = wrap_diff(x - xref, self.angle_idx).unsqueeze(-1)  # (b, x, 1)
-            u = uref - torch.bmm(K, e).squeeze(-1)               # (b, u)
-        return u.detach()
 
 
 # ─────────────────────────────────────────────────────────────────────────── #
@@ -400,25 +350,6 @@ class PreviewSequenceEncoder(nn.Module):
         else:  # mlp
             self.mlp = MLP(num_kept * point_dim, [hidden], out_dim, activation=nn.Tanh())
 
-    def zero_output(self) -> None:
-        """Zero the final Linear so the encoder's output starts at exactly 0.
-
-        Used to warm-start ``u = base + pi`` at an analytic base (CVSTEMLQRBase):
-        with ``W2(xrefs) == 0`` the feedback is identically 0, so training starts
-        exactly at the base. Not frozen — the layer still receives gradient on
-        the first update, since its input is nonzero.
-
-        The output layer differs per mode (``proj`` for gru/attn, the trailing
-        Linear of ``mlp`` otherwise), which is why this lives here rather than at
-        the call site."""
-        last = self.proj if self.mode in ("gru", "attn") else None
-        if last is None:
-            for m in self.mlp.net:
-                if isinstance(m, nn.Linear):
-                    last = m
-        if last is not None:
-            nn.init.zeros_(last.weight)
-            nn.init.zeros_(last.bias)
 
     def train(self, mode: bool = True) -> PreviewSequenceEncoder:
         """Keep the GRU submodule permanently in train mode, regardless of

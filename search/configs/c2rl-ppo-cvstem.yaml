@@ -68,28 +68,6 @@ parameters:
   # gru/attn arms identical to a 1-point mlp and wastes trials.
   xref_encoder_stride:
     values: [1, 2, 3, 5]
-  # ── Actor pretraining before PPO ────────────────────────────────────────── #
-  # Whether π gets pretrained at all before Phase B. False reproduces
-  # from-scratch PPO (only viable per prior runs at low discount_factor/small
-  # obs — see project memory on u=uref+π needing pretrain to avoid diverging).
-  agent.residual_contraction_pretrain:
-    value: false # [true, false]
-  # Which pretrain objective, when the above is true (no-op otherwise):
-  # "contraction" (default) minimizes the C3M Cu≺0 SDP violation against the
-  # frozen Phase-A CMG metric — no CV-STEM-LQR involved. "cvstemlqr" instead
-  # MSE-regresses u=uref+π directly onto the analytic CV-STEM-LQR control law
-  # computed from that same frozen metric — plain supervised regression,
-  # well-posed unlike the SDP-violation loss. See
-  # C2RLAgent._pretrain_residual_contraction / _pretrain_residual_cvstemlqr.
-  agent.residual_pretrain_method:
-    value: cvstemlqr
-  # "cvstemlqr" only: clamp the regression target to the env's actual action
-  # box before the MSE — see C2RLPPOCfg.residual_pretrain_clamp_target
-  # docstring (at cvstem_r_scaler=0.01 the unclamped target saturated 98% of
-  # samples; this env's r_scaler is now 1.5, so the effect may already be
-  # small, but it stays a free knob to check rather than assume).
-  agent.residual_pretrain_clamp_target:
-    value: false
   # ── PPO / GAE knobs (re-opened) ──────────────────────────────────────── #
   # GAE bias/variance trade-off. Same ladder as the standalone ppo.yaml, plus
   # 0.99 (the current per-env pin) so bayes can confirm or move off it.

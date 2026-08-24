@@ -430,12 +430,8 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         control_effort = torch.norm(u, p=2, dim=-1) ** 2
 
         if getattr(self, "reward_euclidean", False):
-            # AUC-aligned reward paired with the CV-STEM-LQR residual baseline
-            # (cvstem_residual_base): the contraction certificate lives in the
-            # analytic baseline, so the learned residual is free to minimize the
-            # True tracking error the eval AUC measures — not the frozen-CMG
-            # Mahalanobis proxy the baseline already ~minimizes (which let PPO
-            # only drift it, 1.06 -> 1.19). See nn_modules.CVSTEMLQRBase.
+            # AUC-aligned reward: the learned policy minimizes the true tracking
+            # error the eval AUC measures, not the frozen-CMG Mahalanobis proxy.
             if getattr(self, "reward_level", False):
                 # Level form: r = -‖e‖. AUC = ∫‖e‖/‖e0‖ dt, so the discounted sum
                 # of -‖e‖ is (minus) the error integral — the tightest possible
@@ -497,7 +493,7 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         # uref - (1/r)Bᵀ W⁻¹ (x - xref) built from this env's frozen CMG. The base
         # already beats CV-STEM-LQR; the unanchored residual degrades it (PPO games
         # the decrement reward), so this keeps the policy at the base unless a
-        # deviation strictly helps tracking. See set_ccm / CVSTEMLQRBase.
+        # deviation strictly helps tracking. See set_ccm.
         if getattr(self, "residual_anchor_scale", 0.0) > 0 and getattr(self, "ccm_gen", None) is not None:
             with torch.no_grad():
                 r = self.cvstem_r + 1e-5

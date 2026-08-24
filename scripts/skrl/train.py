@@ -139,37 +139,6 @@ _ov.add_argument("--entropy_loss_scale", "--entropy-loss-scale",
                  "--ppo_entropy_scale", "--ppo-entropy-scale", type=float, default=None)
 _ov.add_argument("--kl_threshold", "--kl-threshold", "--ppo_kl_threshold", "--ppo-kl-threshold",
                  type=float, default=None)
-_ov.add_argument("--value_loss_scale", "--value-loss-scale", type=float, default=None)
-# C2RL only: actor = CV-STEM-LQR analytic baseline + learned residual (see
-# c2rl.C2RLPPOCfg.cvstem_residual_base / nn_modules.CVSTEMLQRBase).
-_ov.add_argument("--cvstem_residual_base", "--cvstem-residual-base",
-                 dest="cvstem_residual_base", action="store_true", default=None)
-# C2RL only: contraction-pretrain π before PPO (Cu≺0 vs the frozen CMG, not
-# cvstem-lqr) so u = uref + π starts stabilizing — see C2RLPPOCfg.
-_ov.add_argument("--residual_contraction_pretrain", "--residual-contraction-pretrain",
-                 dest="residual_contraction_pretrain", action="store_true", default=None)
-_ov.add_argument("--residual_pretrain_epochs", "--residual-pretrain-epochs",
-                 dest="residual_pretrain_epochs", type=int, default=None)
-_ov.add_argument("--residual_pretrain_batch", "--residual-pretrain-batch",
-                 dest="residual_pretrain_batch", type=int, default=None)
-# C2RL only: pretrain objective — "contraction" (default, Cu⮠ SDP violation vs
-# frozen CMG) or "cvstemlqr" (supervised MSE regression of u=uref+π onto the
-# analytic CV-STEM-LQR control law; base is not attached, deployed law stays
-# u=uref+π). See C2RLPPOCfg.residual_pretrain_method.
-_ov.add_argument("--residual_pretrain_method", "--residual-pretrain-method",
-                 dest="residual_pretrain_method", type=str, default=None,
-                 choices=["contraction", "cvstemlqr"])
-# C2RL only: clamp the "cvstemlqr" pretrain target to the actuator box env_base.step
-# actually applies (2*Uref). Unclamped, the r=0.01 CV-STEM-LQR law is ~2.7x outside
-# that box on most samples, which pretrains the policy straight into saturation —
-# see C2RLPPOCfg.residual_pretrain_clamp_target.
-_ov.add_argument("--residual_pretrain_clamp_target", "--residual-pretrain-clamp-target",
-                 dest="residual_pretrain_clamp_target", action="store_true", default=None)
-# C2RL only: after the trained eval, also evaluate with the residual bypassed
-# (= pure CV-STEM-LQR base) on the identical frozen CMG — a controlled base-vs-
-# residual comparison free of CMG-regression nondeterminism. See models.CLActorModel.
-parser.add_argument("--eval_base_too", "--eval-base-too",
-                    dest="eval_base_too", action="store_true", default=False)
 # AUC-aligned Euclidean-decrement reward (see c2rl.C2RLPPOCfg.reward_euclidean).
 # Works for standalone PPO/SAC too (applied straight to the env — see the
 # `not _is_contraction` block right after raw_env is built) as well as C2RL.
@@ -186,20 +155,6 @@ parser.add_argument("--terminate_out_of_box", "--terminate-out-of-box",
                     dest="terminate_out_of_box", action="store_true", default=None)
 parser.add_argument("--no_terminate_out_of_box", "--no-terminate-out-of-box",
                     dest="terminate_out_of_box", action="store_false")
-# Report that excursion on `terminated` rather than `truncated`. Zeroes the GAE
-# bootstrap, which on a cost reward is a suicide bonus — see
-# BaseEnv.set_terminate_out_of_box.__doc__ before using it.
-parser.add_argument("--terminate_as_terminal", "--terminate-as-terminal",
-                    dest="terminate_as_terminal", action="store_true", default=False)
-# C2RL only: warm-start the residual to the online per-state CV-STEM-LQR controller.
-_ov.add_argument("--cvstem_residual_distill", "--cvstem-residual-distill",
-                 dest="cvstem_residual_distill", action="store_true", default=None)
-_ov.add_argument("--residual_frozen", "--residual-frozen",
-                 dest="residual_frozen", action="store_true", default=None)
-_ov.add_argument("--residual_anchor_scale", "--residual-anchor-scale",
-                 dest="residual_anchor_scale", type=float, default=None)
-_ov.add_argument("--residual_pretrain_init_log_std", "--residual-pretrain-init-log-std",
-                 dest="residual_pretrain_init_log_std", type=float, default=None)
 _ov.add_argument("--pretrain_critic_steps", "--pretrain-critic-steps",
                  dest="pretrain_critic_steps", type=int, default=None)
 _ov.add_argument("--pretrain_critic_epochs", "--pretrain-critic-epochs",
@@ -456,18 +411,6 @@ def _apply_agent_overrides(agent_cfg, args):
             _pol["anneal_stddev"] = a["std_dev_annealing"]
     if args.memory_size is not None:
         agent_cfg["memory"]["memory_size"] = args.memory_size
-    if getattr(args, "cvstem_residual_base", None):
-        a["cvstem_residual_base"] = True
-    if getattr(args, "residual_contraction_pretrain", None):
-        a["residual_contraction_pretrain"] = True
-    if getattr(args, "residual_pretrain_epochs", None) is not None:
-        a["residual_pretrain_epochs"] = args.residual_pretrain_epochs
-    if getattr(args, "residual_pretrain_batch", None) is not None:
-        a["residual_pretrain_batch"] = args.residual_pretrain_batch
-    if getattr(args, "residual_pretrain_method", None):
-        a["residual_pretrain_method"] = args.residual_pretrain_method
-    if getattr(args, "residual_pretrain_clamp_target", None):
-        a["residual_pretrain_clamp_target"] = True
     # Encoder settings are model kwargs (models.policy.* / models.critic.*), not
     # agent-config keys — contraction_runner passes those blocks through verbatim
     # as model kwargs. setdefault, never assignment: a wandb sweep parameter under
@@ -492,14 +435,8 @@ def _apply_agent_overrides(agent_cfg, args):
         a["reward_euclidean"] = True
     if getattr(args, "reward_level", None):
         a["reward_level"] = True
-    if getattr(args, "cvstem_residual_distill", None):
-        a["cvstem_residual_distill"] = True
-    if getattr(args, "residual_frozen", None):
-        a["residual_frozen"] = True
     if getattr(args, "residual_anchor_scale", None) is not None:
         a["residual_anchor_scale"] = args.residual_anchor_scale
-    if getattr(args, "residual_pretrain_init_log_std", None) is not None:
-        a["residual_pretrain_init_log_std"] = args.residual_pretrain_init_log_std
     if getattr(args, "pretrain_critic_steps", None) is not None:
         a["pretrain_critic_steps"] = args.pretrain_critic_steps
     if getattr(args, "pretrain_critic_epochs", None) is not None:
@@ -872,17 +809,6 @@ if _is_classic:
               "and its metrics are already logged. Traceback follows; exiting 0.",
               flush=True)
         traceback.print_exc()
-    # Controlled comparison: re-eval the pure base (residual bypassed) on the same
-    # frozen CMG the trained residual just used — the airtight base-vs-residual delta.
-    if getattr(args_cli, "eval_base_too", False):
-        _pol = getattr(runner.agent, "models", {}).get("policy", None)
-        if _pol is not None and getattr(_pol, "base_controller", None) is not None:
-            _pol._eval_base_only = True
-            _evaluate_classic_path_tracking(task=args_cli.task, runner=runner, args_cli=args_cli,
-                                            _is_classic=_is_classic, label="BASE")
-            _pol._eval_base_only = False
-        else:
-            print("[Eval] --eval_base_too: no CV-STEM-LQR base attached; skipping base eval.")
     if args_cli.eval_held_out_seed is not None:
         _evaluate_classic_path_tracking(task=args_cli.task, runner=runner, args_cli=args_cli,
                                         _is_classic=_is_classic, label="HeldOut",
