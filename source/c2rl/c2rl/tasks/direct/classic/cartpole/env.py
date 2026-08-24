@@ -85,6 +85,22 @@ ENV_CONFIG = {
     "num_dim_control": 1,
     "dt": 0.03,
     "time_bound": 15.0,
+    # Episodes run the full horizon rather than ending on the first excursion
+    # from the termination box. This plant is unstable and pi starts from random
+    # init (u = uref + pi, no warm-start), so with the box armed every episode
+    # ended after ~5 of 500 steps, and stability_summary() then withholds AUC /
+    # contraction rate / overshoot / score entirely -- publishing only
+    # early_end_frac -- because no episode survives to be measured. Running the
+    # full horizon lets AUC measure the divergence instead of the metric being
+    # unavailable.
+    #
+    # Safe on the reward side: the excursion was reported as TRUNCATION, not
+    # termination, and every c2rl-ppo yaml sets time_limit_bootstrap: true, so
+    # there was never a suicide bonus to lose here (see termination_box.py).
+    # The cost is the one that box existed to prevent: a diverged episode now
+    # contributes its remaining off-distribution steps to the rollout batch,
+    # which is a known source of seed-to-seed variance on these two envs.
+    "terminate_out_of_box": False,
     "q": 1.0,
     "r": 0.0,
 }

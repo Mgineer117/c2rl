@@ -14,6 +14,29 @@ STATE_NAMES = ("pos_x", "pitch", "vel_x_b", "pitch_rate")
 # agents/skrl/state_symmetry.py) -- the names are the single source of truth for
 # which dims wrap, which translate, and which co-rotate under a yaw rotation.
 
+# X bounds
+#
+# PITCH_LIM is 0.90 rad (51.6 deg), not the pi/3 (60 deg) it was, and that is a
+# statement about what is CERTIFIABLE, not about the plant.
+#
+# lambda*(x) over the old box is a smooth 0.19-0.34 across ~93% of it and
+# collapses in exactly two opposite corners: maximum tilt combined with fast
+# rotation THE OTHER WAY (pitch -1.047 with pitch_rate +2.69 gives 0.00367, and
+# the mirror +1.047 / -2.69 gives 0.00939). A uniform rate must hold everywhere,
+# so those two corners set it for the whole box -- a 93x collapse driven by ~1%
+# of the volume. At lambda = 0.00367 over a 15 s episode the certified bound is
+# C*exp(-lambda*T) = 1.15 * 0.946 = 1.088 > 1: it does not even promise the error
+# ends below where it started. The certificate was vacuous.
+#
+# Trimming pitch by one grid column removes both corners and lifts the cap 11x,
+# to 0.0407, where the bound is 0.625 -- a real 37% guaranteed decay -- while
+# keeping 87% of the (pitch, pitch_rate) area. Trimming pitch_rate instead is a
+# worse trade: 6x for 27% of the area. See scripts/minproj_plot.py's cached grid
+# and the table in the 2026-08-22 session.
+#
+# This does NOT touch the initial distribution: XE_INIT draws pitch from +-0.15,
+# far inside either bound. What it changes is the set the CM dataset certifies
+# over, and the tilt at which an episode terminates (60 deg -> 51.6 deg).
 PITCH_LIM = 0.90
 X_MIN = [-5.0, -PITCH_LIM, -1.0, -math.pi]
 X_MAX = [5.0, PITCH_LIM, 1.0, math.pi]
@@ -91,6 +114,22 @@ ENV_CONFIG = {
     "num_dim_control": 1,
     "dt": 0.03,
     "time_bound": 15.0,
+    # Episodes run the full horizon rather than ending on the first excursion
+    # from the termination box. This plant is unstable and pi starts from random
+    # init (u = uref + pi, no warm-start), so with the box armed every episode
+    # ended after ~5 of 500 steps, and stability_summary() then withholds AUC /
+    # contraction rate / overshoot / score entirely -- publishing only
+    # early_end_frac -- because no episode survives to be measured. Running the
+    # full horizon lets AUC measure the divergence instead of the metric being
+    # unavailable.
+    #
+    # Safe on the reward side: the excursion was reported as TRUNCATION, not
+    # termination, and every c2rl-ppo yaml sets time_limit_bootstrap: true, so
+    # there was never a suicide bonus to lose here (see termination_box.py).
+    # The cost is the one that box existed to prevent: a diverged episode now
+    # contributes its remaining off-distribution steps to the rollout batch,
+    # which is a known source of seed-to-seed variance on these two envs.
+    "terminate_out_of_box": False,
     "q": 1.0,
     "r": 0.0,
 }
