@@ -1,0 +1,50 @@
+label: c3m
+algorithm: c3m
+num_envs: 64
+
+metric:
+  # contraction_score = contraction_rate / overshoot — higher is better.
+  # StatManagerEnvWrapper injects a fresh Stability/* dict into info["log"]
+  # every env.step() regardless of algorithm, so this is always populated
+  # once the eval-buffer envs complete their first episode.
+  name: "Stability/contraction_score_mean"
+  goal: maximize
+
+parameters:
+  # c3m's contraction knobs live under `agent:`, so these are the same λ/ε the
+  # c2rl configs sweep as cm.lbd/cm.cm_eps — same value lists.
+  agent.lbd:
+    values: [0.01, 0.05, 0.1, 0.3, 0.5, 1.0, 2.0]
+  agent.eps:
+    values: [0.01, 0.1, 0.5, 1.0]
+  agent.W_lr:
+    values: [1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  agent.c1_c2_scale:
+    values: [0.01, 0.05, 0.1, 0.3, 0.5, 1.0]
+  # control backbones only — c3m's certificate needs u = uref + feedback(x-xref),
+  # so plain `mlp` is not a valid option here (see the squashed-backbone policy).
+  models.policy.backbone:
+    values: [control, control-squashed]
+  agent.actor_lr:
+    values: [1.0e-5, 3.0e-5, 1.0e-4, 3.0e-4, 1.0e-3]
+  agent.actor_architecture:
+    values:
+      - [64, 64]
+      - [128, 128]
+      - [512, 512]
+      - [128, 128, 128, 128]
+  # w_lb/w_ub bound the generated metric M(x) (w_lb·I ⪯ M ⪯ w_ub·I) and must
+  # stay w_lb < w_ub — swept as a joint {w_lb, w_ub} pair (wandb's nested-
+  # parameter form) rather than two independent flat parameters, so bayes
+  # never samples an inverted/degenerate pair. c3m's fields live under
+  # `agent:` (skrl_c3m_cfg.yaml), so the outer key here is "agent" —
+  # flattens to the real "agent.w_lb"/"agent.w_ub" override keys.
+  agent:
+    values:
+      - {w_lb: 0.5, w_ub: 1.5}
+      - {w_lb: 0.3, w_ub: 1.5}
+      - {w_lb: 0.2, w_ub: 2.0}
+      - {w_lb: 0.5, w_ub: 5.0}
+      - {w_lb: 0.1, w_ub: 10.0}
+      - {w_lb: 0.01, w_ub: 10.0}
+      - {w_lb: 0.1, w_ub: 100.0}

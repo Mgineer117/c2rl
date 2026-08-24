@@ -1,0 +1,141 @@
+label: c2rl (rl=ppo, cm=cvstem)
+algorithm: c2rl-ppo
+num_envs: 1024
+
+# Bayes, not grid. The PPO trust-region / GAE knobs are re-opened below (see the
+# parameters block), and their cross product with the CM feasibility axes is far
+# too large to enumerate — surrogate-guided search is the point. Under bayes a
+# parameter may be either a discrete `values:` list or a continuous
+# `distribution:` (the latter is what a plain grid could not express).
+method: bayes
+
+metric:
+  # AUC, not reward. Large parts of the CV-STEM {w_lb, w_ub} x lbd x r_scaler
+  # grid are structurally infeasible, so this sweep is as much a feasibility
+  # question as a tuning one — and AUC measures the certified contraction
+  # quantity directly, on the same scale as the infeasibility poison value.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+runner:
+  # An infeasible SDP would otherwise either grind through all 131072 per-state
+  # solves before build_cm_dataset raises, or train a full run on a CMG
+  # regressed onto a handful of surviving states. Either way the run dies or
+  # finishes without writing the metric — and a metric-less run is simply
+  # Ignored by bayes bookkeeping, so nothing is learned and the same dead
+  # region gets sampled again. The wrapper makes the wall a real datapoint.
+  wrapper: true
+  bad_value: 100.0
+
+# The PPO trust-region / GAE block is swept again below (re-opened from the
+# per-env pin: rollouts 4, gae_lambda 0.99, ratio_clip 0.3, kl_threshold 0.02).
+# models.policy.backbone stays pinned at `control` — the CLActor u = uref +
+# feedback(x-xref) form is load-bearing for C2RL's Mahalanobis reward, not a
+# free tuning axis, so it is deliberately not re-opened here.
+# Static flags on every trial's command line. NOTE the reference-window length
+# is deliberately absent: it defaults to AUTO, derived per trial from that
+# trial's discount_factor (RefWindow.length_for_horizon), so a swept gamma
+# resizes the observation to span its own effective horizon 1/(1-gamma).
+# Pinning a length here is what previously let the window be sized for one gamma
+# and used at another. Only the stride is fixed, since it is a layout choice
+# rather than a horizon one.
+extra_flags:
+  - "--ref_offset"
+  - "1"
+
+parameters:
+  # gamma=0.9 -> effective horizon 10 steps -> AUTO ref_length 11 (offset 1).
+  # The window is sized per-trial from this value (RefWindow.length_for_horizon),
+  # so changing gamma here resizes the observation to match automatically.
+  agent.discount_factor:
+    value: 0.9
+  # ── Reference-window encoding (actor W2 + critic psi) ────────────────────── #
+  # "mlp" flattens the (strided) points; "gru"/"attn" consume them as a
+  # sequence — see nn_modules.PreviewSequenceEncoder. The stride applies
+  # Uniformly to all three (keep every stride-th point, nearest-first; 1 =
+  # dense/every point) — it is not specific to one encoder type.
+  # Simultaneous, not independent: these two synthetic keys each fan out to
+  # Both models.policy.encoder/encoder_stride and models.critic.encoder/
+  # encoder_stride (see train_utils.apply_wandb_sweep_overrides) — one trial
+  # always uses the same encoder and stride on both sides, since wandb's
+  # per-path nested-dict join only works when the two targets share a parent
+  # key, which models.policy.* and models.critic.* don't.
+  xref_encoder:
+    values: [mlp, gru, attn]
+  # Trimmed to the window AUTO actually builds at gamma=0.9 (11 points): stride
+  # 1/2/3/5 keep 11/6/4/3 points. The old ladder went to 20, which on an
+  # 11-point window keeps one point — a degenerate "sequence" that makes the
+  # gru/attn arms identical to a 1-point mlp and wastes trials.
+  xref_encoder_stride:
+    values: [1, 2, 3, 5]
+  # ── Actor pretraining before PPO ────────────────────────────────────────── #
+  # Whether π gets pretrained at all before Phase B. False reproduces
+  # from-scratch PPO (only viable per prior runs at low discount_factor/small
+  # obs — see project memory on u=uref+π needing pretrain to avoid diverging).
+  agent.residual_contraction_pretrain:
+    value: false # [true, false]
+  # Which pretrain objective, when the above is true (no-op otherwise):
+  # "contraction" (default) minimizes the C3M Cu≺0 SDP violation against the
+  # frozen Phase-A CMG metric — no CV-STEM-LQR involved. "cvstemlqr" instead
+  # MSE-regresses u=uref+π directly onto the analytic CV-STEM-LQR control law
+  # computed from that same frozen metric — plain supervised regression,
+  # well-posed unlike the SDP-violation loss. See
+  # C2RLAgent._pretrain_residual_contraction / _pretrain_residual_cvstemlqr.
+  agent.residual_pretrain_method:
+    value: cvstemlqr
+  # "cvstemlqr" only: clamp the regression target to the env's actual action
+  # box before the MSE — see C2RLPPOCfg.residual_pretrain_clamp_target
+  # docstring (at cvstem_r_scaler=0.01 the unclamped target saturated 98% of
+  # samples; this env's r_scaler is now 1.5, so the effect may already be
+  # small, but it stays a free knob to check rather than assume).
+  agent.residual_pretrain_clamp_target:
+    value: false
+  # ── PPO / GAE knobs (re-opened) ──────────────────────────────────────── #
+  # GAE bias/variance trade-off. Same ladder as the standalone ppo.yaml, plus
+  # 0.99 (the current per-env pin) so bayes can confirm or move off it.
+  agent.gae_lambda:
+    values: [0.9, 0.95, 0.975, 0.99, 1.0]
+  # PPO trust-region clip on the probability ratio.
+  agent.ratio_clip:
+    values: [0.1, 0.2, 0.3]
+  # KLAdaptiveLR early-stop / LR-adaptation target on the policy update.
+  agent.learning_rate_scheduler_kwargs.kl_threshold:
+    values: [0.008, 0.016, 0.032]
+  # Gradient passes over each rollout batch, and how finely it is split.
+  agent.learning_epochs:
+    values: [2, 5, 10]
+  agent.mini_batches:
+    values: [4, 8, 16]
+  # Non-biasing running-std reward normalizer (r/std, no centering). The
+  # Mahalanobis reward's scale swings with w_lb/w_ub across the state box, and
+  # PPO's advantage normalization only partly absorbs that — see rl_glue.
+  agent.use_reward_norm:
+    values: [true, false]
+  cm.control_scaler:
+    values: [0.0, 0.01, 0.1, 1.0]
+  # ── CAPS action smoothness (policy-loss regularizer, not a reward term) ──── #
+  # Only the temporal term ||pi(s_t) - pi(s_t+1)||^2 is searched. CAPS' own
+  # paper notes that temporal smoothness alone "would likely be sufficient for
+  # the desired control smoothness in well-modeled environments": the spatial
+  # term ||pi(s) - pi(s_bar)||^2 buys robustness to state noise and model
+  # error, and the classic envs are analytically modeled and noise-free. So
+  # caps_spatial_scale is pinned at 0.0 — patch_caps_regularizer then skips
+  # that forward pass entirely, and caps_spatial_std below is inert. Re-open it
+  # by giving it a values list. 0.0 stays in the temporal ladder so the search
+  # always contains the regularizer-free control condition (at which the patch
+  # no-ops completely — no hooks, no extra memory tensors).
+  # See agent_patches.patch_caps_regularizer.
+  agent.caps_temporal_scale:
+    values: [0.0, 0.01, 0.1, 1.0]
+  agent.caps_spatial_scale:
+    value: 0.0
+  agent.caps_spatial_std:
+    value: 0.05   # inert while caps_spatial_scale is 0.0
+  # Pinned. C2RL consumes the metric only as a reward (not a deployed
+  # certificate), so a little per-state λ-backoff and a <100% bar are
+  # acceptable: the offline synthesis samples the full uniform state box,
+  # whose far-from-reference tail (e.g. cartpole |θ|→π/3) is genuinely
+  # infeasible at λ and would otherwise fail an all-or-nothing bar even
+  # though the deployed policy rarely operates there.
+  cm.cmg_method:
+    value: cvstem

@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+title: "C2RL: contraction-metric reinforcement learning on a unified skrl backend"
+message: "If you use this software in your research, please cite it as below."
+type: software
+authors:
+  - family-names: Cho
+    given-names: Minjae
+    email: mj.research117@gmail.com
+repository-code: "https://github.com/Mgineer117/C2RL"
+license: Apache-2.0
+version: 0.1.0
+date-released: "2026-07-22"
+keywords:
+  - reinforcement learning
+  - contraction theory
+  - control contraction metrics
+  - CV-STEM
+  - nonlinear control
+  - Isaac Lab
+abstract: >-
+  c2rl implements contraction-theoretic reinforcement learning and
+  control-synthesis baselines behind one skrl-compatible interface: C2RL (RL
+  against a Mahalanobis reward derived from a Neural Contraction Metric), C3M
+  (differentiable control contraction metric synthesis), CV-STEM-LQR, SD-LQR,
+  and standard PPO/SAC. Every algorithm runs unchanged on both Isaac Lab
+  simulation environments and lightweight analytical environments, and all of
+  them report the same four contraction-stability metrics (normalized error
+  AUC, contraction rate, overshoot, contraction score) so results are directly
+  comparable across algorithms and environment families.

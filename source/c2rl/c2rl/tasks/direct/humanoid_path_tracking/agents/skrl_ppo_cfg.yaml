@@ -1,0 +1,100 @@
+# Copyright (c) 2022-2026, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
+# All rights reserved.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# Adapted from the official Isaac Lab Unitree Go2 flat-terrain skrl PPO config
+# (isaaclab_tasks/manager_based/locomotion/velocity/config/go2/agents/
+# skrl_flat_ppo_cfg.yaml @ isaaclab_tasks 0.11.12), updated for the skrl 2.1.0
+# PPO_CFG field names actually installed here (gae_lambda, no
+# clip_predicted_values) and this repo's use_state_norm/use_value_norm
+# convention; experiment.directory was renamed for this task.
+
+seed: 42
+
+
+# Models are instantiated using skrl's model instantiator utility
+# https://skrl.readthedocs.io/en/latest/api/utils/model_instantiators.html
+models:
+  separate: true
+  policy:  # see gaussian_model parameters
+    class: GaussianMixin
+    backbone: control  # mlp (plain MLP, u = uref + MLP(obs)) | control (CLActor, u = uref + feedback(x-xref))
+    clip_actions: false  # PPO is unbounded; uref+feedback can exceed the declared action space
+                        # (both range over it), so this clip is not redundant here
+    clip_log_std: true
+    min_log_std: -20.0
+    max_log_std: 2.0
+    initial_log_std: 0.0
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers:
+      - 128
+      - 128
+      activations: tanh
+    output: ACTIONS
+  value:  # see deterministic_model parameters
+    class: DeterministicMixin
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers:
+      - 128
+      - 128
+      activations: tanh
+    output: ONE
+
+
+# Rollout memory
+# https://skrl.readthedocs.io/en/latest/api/memories/random.html
+memory:
+  class: RandomMemory
+  memory_size: -1  # automatically determined (same as agent:rollouts)
+
+
+# PPO agent configuration (field names are from PPO_DEFAULT_CONFIG)
+# https://skrl.readthedocs.io/en/latest/api/agents/ppo.html
+agent:
+  class: PPO
+  rollouts: 24
+  learning_epochs: 5
+  mini_batches: 4
+  discount_factor: 0.99
+  gae_lambda: 0.95
+  learning_rate: 1.0e-6
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.01
+  use_state_norm: false
+  use_value_norm: false
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 0.5
+  ratio_clip: 0.2
+  value_clip: 0.0
+  entropy_loss_scale: 0.001
+  value_loss_scale: 0.5
+  kl_threshold: 0.02
+  rewards_shaper_scale: 1.0
+  time_limit_bootstrap: true
+  # Manual log_std annealing (off by default — entropy_loss_scale above is the
+  # active exploration control). If enabled, entropy_loss_scale is force-set
+  # to 0 (annealing and the entropy bonus would otherwise fight each other).
+  std_dev_annealing_kwargs:
+    schedule: exponential
+    final_log_std: -4.6
+    power: 2.0
+  experiment:
+    directory: "humanoid_path_tracking"
+    experiment_name: ""
+    write_interval: "auto"  # Logging frequency for tensorboard/W&B (in epochs/steps)
+    checkpoint_interval: auto
+
+
+# Sequential trainer
+# https://skrl.readthedocs.io/en/latest/api/trainers/sequential.html
+trainer:
+  class: SequentialTrainer
+  timesteps: 50000
+  environment_info: log

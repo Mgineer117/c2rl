@@ -1,0 +1,114 @@
+# C++
+**/cmake-build*/
+**/build*/
+**/*.so
+**/*.log*
+
+# Omniverse
+**/*.dmp
+**/.thumbs
+
+# No USD files allowed in the repo
+**/*.usd
+**/*.usda
+**/*.usdc
+**/*.usdz
+
+# Python
+.DS_Store
+**/*.egg-info/
+**/__pycache__/
+**/.pytest_cache/
+**/*.pyc
+**/*.pb
+
+# Docker/Singularity
+**/*.sif
+docker/cluster/exports/
+docker/.container.cfg
+
+# IDE
+**/.idea/
+**/.vscode/
+# Don't ignore the top-level .vscode directory as it is
+# used to configure VS Code settings
+!.vscode
+
+# Outputs
+**/output/*
+**/outputs/*
+**/videos/*
+**/wandb/*
+**/.neptune/*
+docker/artifacts/
+*.tmp
+
+# Doc Outputs
+**/docs/_build/*
+**/generated/*
+
+# Isaac-Sim packman
+_isaac_sim*
+_repo
+_build
+.lastformat
+
+# Run artifacts. Three separate trees, by what the files ARE (not who wrote
+# them) — see /data/ below for the third:
+#   logs/        — RUN INFORMATION only (tfevents, per-run *.log, eval_results
+#                  .json, checkpoints). Regenerable; safe to delete wholesale.
+#   search/logs/ — hyperparameter-sweep run information (per-agent logs, the
+#                  generated sweep.yaml, nohup redirects). Same character as
+#                  logs/, kept beside search/ so a sweep is self-contained.
+#                  Covered by the same **/logs/* rule below.
+# The old logs/search/ location is retired — sweeps write to search/logs/ now.
+**/runs/*
+**/logs/*
+**/recordings/*
+
+# Training run artifacts (nohup redirects, tensorboard events, stray checkpoints)
+nohup.out
+**/*tfevents*
+/checkpoints/
+
+# Torch checkpoints — regenerable run artifacts, never committed.
+**/*.pt
+**/*.pth
+**/*.ckpt
+
+# Generated DATA (dynamics_data.npz, cm_data*.npz) is deliberately TRACKED, not
+# ignored. These are INPUTS to later runs of other algorithms rather than the
+# output of one run: cm_data*.npz is the CV-STEM/CCM synthesis result, which
+# costs a long serial cvxpy SDP solve to regenerate. Versioning it is what stops
+# a fresh checkout from having to re-run that synthesis.
+# Keep an eye on size — GitHub rejects single files over 100 MB. The current
+# tree is ~16 MB total (largest file 10 MB); if a dynamics_data.npz ever lands
+# here at the ~150 MB it can reach for Isaac envs, it needs git-lfs or an
+# explicit ignore rule rather than a plain commit.
+
+# Per-launch generated W&B sweep yamls (search.sh writes one per sweep, into
+# search/logs/). The searched space itself is versioned in search/configs/.
+search/sweep_*.yaml
+
+# Pre-Trained Checkpoints
+/.pretrained_checkpoints/
+
+# Teleop Recorded Dataset
+/datasets/
+
+# Tests
+tests/
+
+# Docker history
+.isaac-lab-docker-history
+
+# TacSL sensor
+**/tactile_record/*
+**/gelsight_r15_data/*
+
+# MOSEK license (personal/academic — see README.md's Installation section)
+mosek.lic
+
+# CV-STEM synthesis artifacts are regenerable and ~11MB each. The few committed
+# under data/classic/ predate this; new ones should not be added by `git add -A`.
+data/classic/*/cm_data_*_wlb0.1_*.npz

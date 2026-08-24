@@ -1,0 +1,95 @@
+seed: 1  # Random seed for reproducibility — see project memory project_c3m_clip_actions_divergence.md
+         # "Update 3": under "env_isaaclab" (torch 2.7.0+cu128) C3M's double-backward CMG loss was
+         # found universally unstable regardless of seed on a classic task (7/7 tried diverged);
+         # root cause not fully pinned down (looks like float-rounding-level differences between
+         # torch/CUDA builds compounding over several epochs, not a discrete bug). Unlike the
+         # classic tasks, this Isaac Sim task always runs under env_isaaclab — there is no "base"
+         # conda fallback available here, so this instability risk applies with no workaround;
+         # watch for AUC/loss divergence during training.
+models:
+  # separate flag is not functionally used for C3M but is present for code compatibility with SKRL internals
+  separate: true
+  policy:
+    class: DeterministicMixin  # Outputs deterministic continuous values
+    backbone: control-squashed  # tanh-squashed CLActor (SquashedCLDeterministicActorModel) -- feedback
+                        # is tanh-bounded into the action space (uref added after squashing), and
+                        # _compute_loss certifies exactly that bounded control law via compute(), not a
+                        # torch.clamp of the unbounded "control" backbone's output -- clamp's gradient is
+                        # exactly zero at saturation (K=jacobian(u,x) dies there too), which silently
+                        # degrades the certificate to open-loop-only in the states that need feedback
+                        # most. See project_c3m_clip_actions_divergence.md /
+                        # project_c3m_env_divergence_2026-07-10.md. See models.py's
+                        # SquashedCLDeterministicActorModel docstring for details.
+    clip_actions: false  # no-op with backbone: control-squashed: the control law is already in-bounds
+                        # by construction, so clamping it is an identity op. Kept only for schema
+                        # compatibility -- do not set true, it doesn't do anything meaningful here.
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers: [256, 256]
+      activations: tanh
+  cmg:
+    class: CMG
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers: [256, 256]
+      activations: tanh
+      constrain_eigenvalues: true
+  dynamics:
+    class: NeuralDynamics
+    network:
+    - name: net
+      input: STATE_ACTION
+      layers: [128, 128]
+      activations: tanh
+memory:
+  class: RandomMemory
+  memory_size: 131072  # Capacity of the experience replay buffer (-1 means dynamic/infinite)
+
+agent:
+  class: C3M
+  batch_size: 1024
+  learning_rate_scheduler: "ExponentialLR"  # mild per-step decay so a long run doesn't collapse LR to ~0
+  learning_rate_scheduler_kwargs:
+    gamma: 0.9999  # shared by the CMG (W), policy (u), and NeuralDynamics optimizers; stepped once per training iteration
+  W_lr: 1.0e-3  # Learning rate for the Contraction Metric Generator (CMG) network
+  u_lr: 1.0e-3  # Learning rate for the Policy (Actor) network
+  lbd: 0.5  # Contraction rate parameter (lambda) enforcing the exponential stability bound
+  eps: 0.01  # Margin parameter (epsilon) ensuring strict definiteness of the metric
+  w_ub: 10.0  # Upper bound clipping value for the generated metric M(x)
+  w_lb: 0.1  # Lower bound clipping value for the generated metric M(x)
+  c1_c2_scale: 0.5
+  detach_warmup_frac: 0.0  # Fraction of training freezing M in the contraction term
+  # (matches C3MCfg's own default) — the double-backward Ṁ term is the most numerically
+  # fragile part of the loss (see c3m.py docstring); leaving this at 0.0 makes training
+  # seed-sensitive, with some random seeds diverging outright instead of just training worse.
+  # Isaac env: train NeuralDynamics online from trajectory buffer data.
+  # Saved to <experiment_dir>/checkpoints/dynamics.pt after training.
+  use_empirical_dynamics: true  # false = env's analytical get_f_and_B; true = learn NeuralDynamics
+  # States×controls for online dynamics-data generation (use_empirical_dynamics=true
+  # with no dynamics_pretrain_data_path): samples ceil(memory_size / N) states and
+  # pairs each with N distinct controls → N control-aware samples per state. Only
+  # affects NeuralDynamics pretraining; ignored under analytical dynamics. Default 3.
+  num_controls_per_state: 3
+  dynamics_lr: 1.0e-3  # Learning rate for the NeuralDynamics network
+  dynamics_pretrain_epochs: 500  # Number of epochs for offline data, or number of rollouts for online fallback
+  dynamics_pretrain_data_path: "data/quadruped/dynamics_data.npz"  # Path to offline dynamics data
+  dynamics_batch_size: 4096
+  emp_dynamics_memory_size: 8192  # fixed pretraining buffer, uniformly subsampled from dynamics_pretrain_data_path
+                                   # (capped + warned if this exceeds the data on disk)
+  experiment:
+    directory: "quadruped_c3m"
+    experiment_name: ""
+    write_interval: "auto"  # Logging frequency for tensorboard/W&B (in epochs/steps)
+    checkpoint_interval: "auto"  # Frequency of saving model weights (in epochs/steps)
+    wandb: true  # Enable Weights & Biases logging
+    wandb_kwargs:
+      project: c2rl
+      name:    # auto-generated by train.py (deterministic, matches local log dir)
+
+trainer:
+  class: C3MTrainer
+  timesteps: 100  # Total number of environment steps to train for
+  eval_interval: 1  # Frequency of running evaluation rollouts
+  environment_info: log  # Type of environment information to record (e.g., log)

@@ -1,0 +1,54 @@
+label: c2rl-ppo gamma x seed (4 discount factors x 20 seeds, grid)
+algorithm: c2rl-ppo
+num_envs: 1024
+
+# GRID, not bayes — this is not a search. It is a fixed factorial design: every
+# (discount_factor, seed) cell must run exactly once. Bayes would concentrate
+# trials wherever the metric looked good and leave cells empty, which is exactly
+# wrong when the point is a per-gamma distribution over seeds.
+# 4 x 20 = 80 trials; `build_sweep.py --count` prints that before launch.
+method: grid
+
+metric:
+  # Recorded, not optimized: a grid ignores the metric when proposing trials.
+  # Kept as auc_mean so these runs sit on the same scale as every other sweep
+  # here, and so runner.bad_value below has a sign to match.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+runner:
+  # Same reason as c2rl-ppo-cvstem, and it matters more here than under bayes:
+  # an infeasible CM SDP finishes without writing the metric, and a metric-less
+  # run is indistinguishable from a cell that was never run — so it would
+  # silently shrink the seed count for that gamma instead of showing up as a
+  # failure. The wrapper makes the wall a real datapoint.
+  wrapper: true
+  bad_value: 100.0
+
+extra_flags:
+  # 200k, not the yaml's 1M. This grid exists to measure a failure rate,
+  # and the divergence it is counting was fully developed by gs 75k
+  # (auc 22 vs 3, overshoot 21 vs 4) — so 200k carries 2.7x margin while
+  # taking ~1 day per arm instead of ~4. Raise it back for anything that
+  # asks about late-training behaviour.
+  - "--num_timesteps"
+  - "200000"
+  # Stride only. ref_length is deliberately not fixed — see the note on
+  # discount_factor below.
+  - "--ref_offset"
+  - "1"
+
+parameters:
+  # The reference window is sized per-trial from gamma
+  # (RefWindow.length_for_horizon), so each discount factor gets an observation
+  # spanning its own effective horizon 1/(1-gamma): gamma=0.9 -> 11 points,
+  # gamma=0.01 -> 2. Pinning ref_length across this range would make the
+  # high-gamma cells a POMDP and confound the very comparison being run.
+  # 0.999 spans the whole 500-step episode (ref_length clamps to 500, obs 2504
+  # wide) — that cell is deliberately the extreme end of the sweep.
+  agent.discount_factor:
+    values: [0.01, 0.9, 0.99, 0.999]
+  # 20 seeds per gamma. train.py's --seed wins over the env yaml's own `seed:`
+  # (see its "CLI arg wins" note), so this is the whole seed control.
+  seed:
+    values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]

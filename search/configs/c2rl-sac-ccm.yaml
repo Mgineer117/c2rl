@@ -1,0 +1,79 @@
+label: c2rl (rl=sac, cm=ccm)
+algorithm: c2rl-sac
+num_envs: 64
+
+# Exhaustive grid, not bayes — see c2rl-ppo-cvstem.yaml. Every parameter must be
+# a discrete `values:` list; build_sweep.py rejects a `distribution:` here.
+method: grid
+
+metric:
+  # AUC, minimized — see c2rl-ppo-ccm.yaml. Previously implicit via
+  # patch_auc_checkpoint's overwrite of the reward key; now stated directly.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+parameters:
+  agent.discount_factor:
+    # See c2rl-sac-cvstem.yaml: gamma -> 0 collapses SAC's critic to Q ~= r and
+    # hands the objective to the entropy term, so the low end is left to PPO.
+    values: [0.9, 0.99, 0.999]
+  # NOTE the key: `models.` — not `agent.models.`. train.py walks agent_cfg from
+  # the ROOT, and `models:` is a top-Level block, so the old
+  # `agent.models.policy.backbone` wrote into a dangling subtree nothing reads
+  # and the backbone was silently never swept. Only the tanh-squashed backbones
+  # are valid for SAC — runner.py hard-rejects mlp/control for the SAC family.
+  models.policy.backbone:
+    values: [control-squashed, mlp-squashed]
+  agent.learn_entropy:
+    values: [true, false]
+  agent.initial_entropy_value:
+    # alpha is weighed against the raw Mahalanobis reward in the critic target,
+    # whose scale moves with w_lb/w_ub — which this sweep also varies. See
+    # c2rl-sac-cvstem.yaml.
+    values: [0.05, 0.2, 1.0]
+  # SAC gets no value normalization (rl_glue gates use_value_norm on PPO), so it
+  # regresses Q on the raw heavy-tailed reward unless this is on.
+  agent.use_reward_norm:
+    values: [true, false]
+  # ── CAPS action smoothness — see c2rl-ppo-cvstem.yaml ───────────────────── #
+  # Temporal term only; the spatial term is pinned off (these envs are
+  # analytically modeled and noise-free, which is what it would buy robustness
+  # against). 0.0 stays in the ladder as the regularizer-free control.
+  agent.caps_temporal_scale:
+    values: [0.0, 0.01, 0.05, 0.2, 1.0]
+  agent.caps_spatial_scale:
+    value: 0.0
+  agent.caps_spatial_std:
+    value: 0.05   # inert while caps_spatial_scale is 0.0
+  # The CMG's own direct-synthesis learning rate (ccm has no SDP, so there is no
+  # cvstem_r_scaler to sweep instead — see c2rl.py's docstring on cmg_method).
+  # Pinned here, unlike in the ppo-ccm sweep: SAC's grid already carries the
+  # entropy and backbone axes this sweep exists to answer, and the cross product
+  # has to stay comparable in size to c2rl-sac-cvstem.yaml's.
+  cmg.cmg_regress_lr:
+    value: 1.0e-3
+  # w_lb/w_ub bound W(x)'s eigenvalues (w_lb·I ⪯ W ⪯ w_ub·I) and must stay
+  # w_lb < w_ub — listing them as two independent parameters would let the
+  # enumeration produce inverted/degenerate pairs. A categorical parameter whose
+  # values are {w_lb, w_ub} dicts is wandb's nested-parameter form: it flattens
+  # to the same "cm.w_lb"/"cm.w_ub" keys as flat parameters would, but moves the
+  # pair jointly so w_lb < w_ub always holds. ccm-only: cvstem already fixes
+  # them indirectly via its cm_data_path cache key.
+  cm:
+    values:
+      - {w_lb: 0.1, w_ub: 1.0}
+      - {w_lb: 1.0, w_ub: 10.0}
+  cm.cmg_method:
+    value: ccm
+  cm.control_scaler:
+    values: [0.0, 0.5]
+  # Pinned at the per-env yaml values — thoroughly covered by the earlier bayes
+  # sweep and not what this grid is asking about. Re-open one at a time.
+  agent.gradient_steps:
+    value: 1
+  agent.batch_size:
+    value: 1024
+  agent.polyak:
+    value: 0.005
+  agent.learning_rate:
+    value: 3.0e-4

@@ -1,0 +1,73 @@
+seed: 42  # Random seed for reproducibility
+
+# CV-STEM-LQR: Tsukamoto's CV-STEM contraction controller — analytical (no RL),
+# u = uref - K(x)(x-xref) with K(x) = R⁻¹B(x)ᵀM(x), M(x)=W(x)⁻¹ from the CV-STEM
+# metric SDP (one joint program over uniform state-box samples, ν/χ shared
+# — Tsukamoto's classncm.cvstem0). See agents/skrl/cvstem_lqr.py.
+
+agent:
+  # lbd/r_scaler/w_lb/w_ub come from scripts/find_uniform_lambda.py run at
+  # N=100 with --cm-eps 0.1 --cm-dt 1.0 --w-lb 0.001 --w-ub 1000, and are then
+  # Certified by the N=10000 synthesis below at cm_eps 0.01. The two eps values
+  # are deliberate, not a mismatch: eps buys a covering radius eps/L around each
+  # sample, so a 100-sample search needs the larger margin and a 10000-sample
+  # solve does not. See docs/subset_lambda_procedure.md sections 7 and 8d.
+  class: CVSTEM-LQR
+  r_scaler: 0.1
+  experiment:
+    directory: "quadrotor_cvstem_lqr"
+    experiment_name: ""
+    write_interval: "auto"
+    checkpoint_interval: "auto"
+    wandb: true
+    wandb_kwargs:
+      project: c2rl
+      name:
+
+# ── The joint CV-STEM SDP (Tsukamoto's classncm.cvstem0) ───────────────────── #
+cm:
+  # λ — the certified contraction rate. Comes from scripts/find_uniform_lambda.py
+  # (the λ-selection step; the reference's own linesearch is not run here).
+  # From scripts/find_uniform_lambda.py's uniform state-box search — measured
+  # jointly with the r/w_lb/w_ub here, one solution of one program.
+  lbd: 1.3169
+  cm_eps: 0.01
+  # Tsukamoto's CV-STEM sampling period, which is a synthesis hyperparameter and
+  # Not the integrator step: his cart-pole notebook uses dt=1 while the sim runs
+  # at 0.1 and RK4-substeps at 0.01. Unset, this falls back to the env integrator
+  # step, a much harsher (W-I)/dt bound that inflates nu by the same factor.
+  cm_dt: 1.0
+  # Deployment envelope w_lb·I ⪯ W ⪯ w_ub·I, as the caps nu <= 1/w_lb and
+  # chi <= nu*w_ub on the joint program's shared nu/chi. Absent, this is the
+  # reference program (no envelope) — but lbd above was certified with them.
+  cm_w_lb: 0.001
+  cm_w_ub: 1000.0
+  cm_solver: MOSEK  # SCS (no license) | CLARABEL | MOSEK (tightest/fastest; see README)
+  # Uniform state-box samples in the one joint SDP (his Nx=1000). A solver-Size
+  # knob: each sample adds an x_dim² PSD block plus two LMIs to a single problem.
+  cm_samples: 10000
+  cm_seed: 0
+  # Cache the joint solve (see CVSTEMLQRCfg.cm_data_path). Keyed on every
+  # knob that enters the program, so a config change re-solves rather than
+  # loading a metric certifying a different rate.
+  cm_data_path: "data/classic/quadrotor/cvstem.npz"
+  # Uncomment for his lambda selection instead (linesearch: walk lambda up from
+  # lo to hi in steps of da, take argmin J = chi/lambda + nu). It ignores `lbd`
+  # above and does not look at the actuator box.
+  # lbd_linesearch: [0.1, 3.0, 0.1]
+
+# ── The metric network: x -> chol(M) (nn_modules.CholMetric) ──────────────── #
+cmg:
+  # The reference's own architecture: a 3x100 ReLU MLP on the raw state.
+  cmg_hidden_dims: [100, 100, 100]
+  cmg_regress_epochs: 100
+  cmg_regress_lr: 1.0e-3
+  cmg_regress_batch_size: 320
+  cmg_regress_lr_scheduler: "StepLR"
+  cmg_regress_lr_scheduler_kwargs:
+    step_size: 1
+    gamma: 0.99
+trainer:
+  class: SequentialTrainer
+  timesteps: 10000  # Total number of environment steps to evaluate for
+  environment_info: log  # Enable logging of stability metrics from info["log"]

@@ -1,0 +1,268 @@
+seed: 42  # Random seed for reproducibility
+
+models:
+  separate: true
+  # The single deployed policy C2RL trains, on the Mahalanobis reward.
+  policy:
+    class: GaussianMixin # DeterministicMixin
+    backbone: control  # PPO is unbounded; uref+feedback can exceed the declared action space
+    encoder: gru
+    encoder_stride: 3
+    clip_actions: false
+    clip_log_std: true
+    # -6.9 = log(0.001). A clamp floor only, sitting well below the annealing
+    # target (std_dev_annealing_kwargs.final_log_std = -4.6, sigma 0.01), so it
+    # never truncates the schedule. (nn_modules._MIN_LOG_STD is the same number
+    # but belongs to CLActor.anneal_stddev, a path C2RL never takes:
+    # train.py only installs it when the runner's agent exposes `.policy`, and
+    # C2RLAgent does not.) Matters when std_dev_annealing is false: with a
+    # Learned log_std and entropy_loss_scale 0.0, PPO shrinks sigma monotonically,
+    # and skrl's -20 default lets it reach ~2e-9 — a numerically degenerate
+    # log_prob and zero exploration for the rest of the run.
+    min_log_std: -6.9
+    max_log_std: 2.0
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers: [128, 128]
+      activations: tanh
+    output: ACTIONS
+    # sigma = exp(-2) = 0.135, not exp(0) = 1.0. On the +-3 applied box that
+    # is 4.5% of the half-range instead of 33%, so the policy starts near its
+    # mean rather than being dominated by its own noise. Inside the
+    # min_log_std/max_log_std clamp above, so it is not truncated at init.
+    initial_log_std: -2.0
+  critic:  # PPO value function V(obs)
+    class: DeterministicMixin
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers: [128, 128]
+      activations: tanh
+    output: ONE
+  # NeuralDynamics (ẋ = f(x) + B(x)·u) — feeds the online contraction-metric SDP
+  # when learning dynamics. Built only when use_empirical_dynamics=true (pass
+  # --use_empirical_dynamics); classic envs default to analytical get_f_and_B.
+  dynamics:
+    class: NeuralDynamics
+    network:
+    - name: net
+      input: STATE_ACTION
+      layers: [128, 128]
+      activations: tanh
+  # Always built (see c2rl.py module docstring). cmg_method=cvstem (below):
+  # trained via CV-STEM SDP regression. Always a BoundedCCM_Generator
+  # regardless of constrain_eigenvalues here — the runner forces it.
+  cmg:
+    class: CMG
+    network:
+    - name: net
+      input: OBSERVATIONS
+      layers: [128, 128]
+      activations: tanh
+
+memory:
+  class: RandomMemory
+  memory_size: -1  # PPO: one rollout epoch, reset each epoch (== agent.rollouts)
+
+agent:
+  class: C2RL-PPO
+  # PPO shared config (the single deployed policy's PPO sub-agent).
+  rollouts: 24   # Number of environment steps per parallel environment per update
+  learning_epochs: 2  # Number of gradient descent passes over the collected batch
+  mini_batches: 8  # Number of subsets to divide the batch into for stochastic optimization
+  gae_lambda: 0.99  # Lambda parameter for Generalized Advantage Estimation (GAE)
+  learning_rate: 3.0e-5   # Global step size, truly fixed — no scheduler at all
+  # null: no KL-adaptive schedule. learning_rate above is a constant for the
+  # whole run, which is what makes it a meaningful search axis — under an
+  # adaptive scheduler the swept value is mostly forgotten within a few updates.
+  #
+  # The schedule was worth removing on its own merits: steering toward
+  # kl_threshold 0.008 under a PPO early-stop of 0.01, its decrease branch could
+  # never fire (that needs mean KL > 0.016 at kl_factor=2, above the stop), so it
+  # only ever ratcheted the LR upward.
+  #
+  # `Policy / KL divergence` and `Learning / Learning rate` survive this, despite
+  # skrl only exposing the KL through `KLAdaptiveLR.step(kl)`:
+  # agent_patches.patch_kl_logging attaches a KLAdaptiveLR clamped to
+  # min_lr == max_lr == the optimizer's current lr whenever a PPO-family agent
+  # has none. It cannot move the LR (both of step()'s branches clamp to the same
+  # value) but the hook still fires every update. So the metric does not depend
+  # on remembering a config key here.
+  learning_rate_scheduler: null
+  # Inert while learning_rate_scheduler is null. Kept only so re-enabling the
+  # scheduler does not also require re-deriving these.
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.008
+    min_lr: 1.0e-5
+    max_lr: 1.0e-5
+  # false -> PPO learns log_std through the policy loss (stock-PPO behavior) and
+  # the schedule below is ignored; true -> log_std is frozen and driven by the
+  # schedule. Override per-run with --std_dev_annealing false.
+  std_dev_annealing: false
+  std_dev_annealing_kwargs:
+    schedule: exponential
+    final_log_std: -4.6
+    power: 2.0
+  random_timesteps: 0
+  learning_starts: 0
+  grad_norm_clip: 5  # Maximum permitted magnitude for gradients (prevents exploding gradients)
+  ratio_clip: 0.1  # PPO trust region clipping bound for the objective ratio
+  value_clip: 0.0  # Clipping bound for the value function update
+  entropy_loss_scale: 0.0 # Coefficient to encourage exploration by maximizing action entropy
+  value_loss_scale: 0.5  # Weight coefficient for the value function loss term
+  # Hard early-stop: skrl's PPO breaks out of the epoch when a minibatch's KL
+  # exceeds this (ppo.py: `if self.cfg.kl_threshold and kl_divergence > ...`).
+  # With the LR now fixed (no scheduler), this is the only trust-region control:
+  # a single minibatch exceeding it abandons the rest of the epoch. Note the stop
+  # is per-Minibatch, not on the epoch mean.
+  kl_threshold: 0.016
+  time_limit_bootstrap: true  # Bootstrap value at episode truncation instead of treating it as terminal
+  rewards_shaper_scale: 1.0
+  use_state_norm: false  # Off by default — see c2rl.py module docstring / rl_glue.make_base_rl_cfg
+  use_value_norm: false    # Same, but for the value function's output (PPO only)
+  use_reward_norm: false   # Non-biasing running-std reward normalizer (r/std, no centering) — tames the
+                         # w_lb/w_ub-dependent Mahalanobis-reward scale/heavy-tail before GAE; see rl_glue.
+
+  # ── CAPS action smoothness (Mysore et al. 2021) ─────────────────────────── #
+  # Added to the policy loss, not the reward: pi's mean is penalized for
+  # changing between consecutive states (temporal) and under a small state
+  # perturbation (spatial). Because it is not a reward term, the MDP, the
+  # observation layout and the dynamics are all untouched — so the offline
+  # CV-STEM synthesis and the contraction certificate it produces stay valid,
+  # which a `-||u_t - u_t-1||^2` reward term would not (it needs u_t-1 in the
+  # observation, which breaks the CLActor's obs_dim = 2*x_dim + u_dim layout).
+  # Both 0.0 = off. Override per-run with --caps_temporal_scale /
+  # --caps_spatial_scale / --caps_spatial_std. See patch_caps_regularizer.
+  caps_temporal_scale: 0.0  # weight on ||pi(s_t) - pi(s_t+1)||^2
+  caps_spatial_scale: 0.0    # weight on ||pi(s) - pi(s_bar)||^2, s_bar ~ N(s, sigma^2)
+  caps_spatial_std: 0.05     # sigma, in raw observation units (see patch_caps_regularizer)
+  discount_factor: 0.01  # deployed policy's discount factor (single policy — no con/opt duality)
+  # NOTE: the contraction-metric / Mahalanobis-reward config (cmg_method, w_ub,
+  # w_lb, lbd, tracking_scaler, control_scaler, cm_eps, cm_solver) lives in the
+  # top-level `cm:` block below; the offline CMG synthesis (Phase A, always
+  # runs) additionally reads `cmg:`; use_empirical_dynamics reads `empirical_dynamics:`.
+  experiment:
+    directory: "car_c2rl_ppo"
+    experiment_name: ""
+    write_interval: "auto"  # Logging frequency for tensorboard/W&B (in epochs/steps)
+    checkpoint_interval: "auto"  # Frequency of saving model weights (in epochs/steps)
+    wandb: true  # Enable Weights & Biases logging
+    wandb_kwargs:
+      project: c2rl
+      name:    # auto-generated by train.py (deterministic, matches local log dir)
+
+# ── Contraction metric + Mahalanobis reward ────────────────────────────────── #
+cm:
+  # Metric source — how the env computes the Mahalanobis reward. "cmg": the
+  # frozen Phase-A network below (cmg_method selects how it is trained).
+  # does) — impractical here at this num_envs. See c2rl.py's module docstring.
+  # Mahalanobis reward + the CV-STEM envelope w_lb·I ⪯ W ⪯ w_ub·I. These are one
+  # measurement with lbd/cvstem_r_scaler below, not four independent knobs — the
+  # envelope caps ν ≤ 1/w_lb and hence the gain ‖K‖ ≤ ‖B‖/(r·w_lb), so changing
+  # either bound invalidates the rate. w_lb also sets the Mahalanobis reward's
+  # scale, so it is not reward-neutral.
+  w_ub: 1000.0
+  w_lb: 0.001
+  lbd: 0.0771
+  tracking_scaler: 1.0  # Q: tracking-error weight
+  control_scaler: 0.0   # R: control-effort weight (0 = disabled, already 0)
+  # SDP contraction metric (cm_eps used by both cmg_method paths; cm_solver "cvstem" only)
+  cm_eps: 0.01
+  cm_solver: MOSEK  # cvxpy SDP solver: SCS (default, no license) | CLARABEL (no license, tighter/slower) | MOSEK (commercial license, tightest/fastest — see README.md Installation)
+  # cmg_method selects the training pipeline (see c2rl.py module docstring):
+  #   "ccm"    — trains the CMG directly via C1/C2 loss minimization
+  #             (train_cmg_ccm) — no SDP, so cvstem_r_scaler/
+  #             are unused here.
+  #   "cvstem" (default, this config) — Tsukamoto CV-STEM-style: solves one
+  #              pointwise SDP per state (ncm_synthesis.solve_cm_metric)
+  #              keeping B directly via a Riccati term (R = cvstem_r_scaler·I
+  #              below) — the same congruence trick (W = M⁻¹) that convexifies
+  #              the Riccati inequality — M(x) doubles as a state-dependent-
+  #              Riccati solution, so K(x) = R⁻¹B(x)ᵀM(x) is a ready LQR-style
+  #              gain (not wired up here — C2RL only consumes M for the reward):
+  #               A(x)·W + W·A(x)ᵀ - 2·B·R⁻¹·Bᵀ + 2λ·W ⪯ -ε·I
+  #               w_lb·I ⪯ W ⪯ w_ub·I
+  #              (the factor 2 is the closed loop A - B R⁻¹BᵀM carried through the
+  #              W = M⁻¹ congruence — it is what makes K above the certified gain.)
+  #              Control is penalized via this Riccati term, not bounded over an
+  #              action range — see ncm_synthesis.py module docstring.
+  cmg_method: cvstem
+  # 3.2, not car's 1.6 — measured together with lbd: 0.0771 above, not tuned
+  # separately. r is live only where the ν term in J competes; at car_v1's rate
+  # it took the box violations from ~7% at r=0.1 down to 4.82% at r=3.2.
+  cvstem_r_scaler: 3.2
+  # On SDP infeasibility at a given state, retry that state alone with λ
+  # halved, up to this many times, before giving up on it and dropping it from
+  # the dataset — 0 disables this and reverts to dropping immediately. Warns
+  # per reduced state + an aggregate summary (build_cm_dataset). "cvstem" only.
+  # See ncm_synthesis._solve_cm_metric_with_backoff.
+  # Cache the synthesized {x, W} CM dataset here (build_cm_dataset's per-state SDP
+  # solve is the expensive part of "cvstem" synthesis — 131072 states can take
+  # minutes; unused by "ccm", which has no cache). Reused on a later run as long
+  # as lbd/w_lb/w_ub/cm_eps/cm_solver/cvstem_r_scaler/cmg_memory_size below all
+  # still match too; re-solved and overwritten otherwise. "cvstem" only.
+  # Must differ from classic-car-v0's path. The dataset is {x -> W*(x)} sampled
+  # over the env's state box, and the box is not part of the cache key
+  # (cm_dataset_target keys on lbd/w_lb/w_ub/r/eps/solver/N only). classic-car-v1
+  # widens the velocity box down to v = 0.2, a region classic-car-v0 never samples
+  # -- so sharing a path would silently hand the weak variant a metric that was
+  # never solved anywhere near the weak-authority states the whole experiment is
+  # about, and no key check would catch it.
+  cm_data_path: "data/classic/car_v1/cm_data.npz"
+
+# ── Offline CMG synthesis (Phase A, always runs before Phase B) ───────────── #
+# Sample cmg_memory_size states (uniformly from the classic env's analytic
+# state space, or from empirical_dynamics.dynamics_pretrain_data_path when
+# set). "cvstem": solve one SDP per state, then MSE-regress the models.cmg
+# network onto {x -> W*}. "ccm": train models.cmg directly with C1/C2 losses,
+# no SDP. Either way, freeze before Phase B.
+cmg:
+  # Tsukamoto's Nx, and the same count skrl_cvstem_lqr_cfg.yaml solves — the two
+  # algorithms' metrics are only comparable if they are fit to the same amount of
+  # SDP data. Not a free knob: it sets the regression's dataset size, so the four
+  # settings below are sized against it.
+  # 10000, not 100000 — see car's config: the joint SDP costs ~N^1.95, so 100000
+  # would be ~100x the ~15 h that 10000 takes and would never finish.
+  cmg_memory_size: 10000
+  # regress_cmg does `iters = max(1, n_train // batch_size)`, so at 900 training
+  # points the old batch 1024 silently became one full-batch step per epoch —
+  # 1000 gradient steps total, deep in the starved regime (measured relative
+  # error on M: 0.55 at 0.5k steps, 0.23 at 5k, 0.03 at 100k). The `max(1, ...)`
+  # means this degrades quietly rather than erroring. At cmg_memory_size 10000
+  # the split is 9000 train, so 9000 // 320 = 28 batches x 3000 epochs = ~84k
+  # steps — the same budget as N=1000/batch-32, scaled by batch rather than by
+  # epochs so cmg_early_stop_patience keeps meaning the same thing in epochs.
+  cmg_regress_epochs: 3000
+  cmg_regress_lr: 1.0e-3
+  cmg_regress_lr_scheduler: "StepLR"  # built the same way as empirical_dynamics' scheduler
+  cmg_regress_lr_scheduler_kwargs:
+    step_size: 1  # anneal every epoch
+    # gamma is per epoch and must be sized to the epoch count: 0.99^3000 = 1e-13
+    # would annihilate the lr by epoch ~500. 0.999^3000 lands at 5e-5.
+    gamma: 0.999
+  cmg_regress_batch_size: 3200
+  # In epochs. The dataclass default of 10 would stop after ~280 steps, i.e.
+  # before the fit has started.
+  cmg_early_stop_patience: 300
+
+# ── Dynamics — analytical env get_f_and_B by default; set use_empirical_dynamics
+#    true (classic envs only) to learn a NeuralDynamics instead. ─────────────── #
+empirical_dynamics:
+  use_empirical_dynamics: false  # false = env analytical get_f_and_B; true = learn NeuralDynamics
+  # States×controls for online dynamics-data generation (use_empirical_dynamics=true
+  # with no dynamics_pretrain_data_path): samples ceil(memory_size / N) states and
+  # pairs each with N distinct controls → N control-aware samples per state. Only
+  # affects NeuralDynamics pretraining; ignored under analytical dynamics. Default 3.
+  num_controls_per_state: 3
+  dynamics_lr: 1.0e-3
+  dynamics_lr_scheduler: "StepLR"
+  dynamics_lr_scheduler_kwargs:
+    step_size: 1  # anneal every epoch
+    gamma: 0.999
+  dynamics_batch_size: 4096
+  dynamics_pretrain_epochs: 100  # offline-data epochs, or online rollouts when no data path
+
+trainer:
+  class: C2RLSkrlTrainer
+  timesteps: 100000  # Total number of environment steps to train for

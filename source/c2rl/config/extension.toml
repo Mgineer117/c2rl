@@ -1,0 +1,35 @@
+[package]
+
+# Semantic Versioning is used: https://semver.org/
+version = "0.1.0"
+
+# Description
+category = "isaaclab"
+readme  = "README.md"
+
+title = "c2rl"
+author = "Minjae Cho"
+maintainer = "Minjae Cho"
+description = "Contraction-metric reinforcement learning: C2RL, C3M, CV-STEM-LQR and SD-LQR on a unified skrl backend, for Isaac Lab and lightweight analytical environments."
+repository = "https://github.com/minjaecho/c2rl"
+keywords = ["reinforcement-learning", "contraction-theory", "control", "isaaclab", "skrl"]
+
+[dependencies]
+"isaaclab" = {}
+"isaaclab_assets" = {}
+"isaaclab_mimic" = {}
+"isaaclab_rl" = {}
+"isaaclab_tasks" = {}
+# NOTE: Add additional dependencies here
+
+[[python.module]]
+name = "c2rl"
+
+[isaac_lab_settings]
+# TODO: Uncomment and list any apt dependencies here.
+#       If none, leave it commented out.
+# apt_deps = ["example_package"]
+# TODO: Uncomment and provide path to a ros_ws
+#       with rosdeps to be installed. If none,
+#       leave it commented out.
+# ros_ws = "path/from/extension_root/to/ros_ws"

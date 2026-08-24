@@ -1,0 +1,47 @@
+label: cvstem-lqr (joint CV-STEM SDP + chol(M) net, 1-episode eval)
+algorithm: cvstem-lqr
+# 64 envs, fixed. CV-STEM-LQR is analytical — nothing is trained, so a trial is
+# a pure evaluation and more envs buys only a better mean. The metric is one
+# joint SDP solved once at construction (then a frozen network), so the env count
+# is no longer the dominant cost — cm_samples is.
+num_envs: 64
+
+metric:
+  # AUC of the normalized error curve e(t)/e(0) — minimized. Same metric the
+  # lqr/sdlqr sweeps optimize: it measures the certified contraction quantity
+  # directly rather than a training-reward proxy, which is the right target
+  # for an analytical controller that has no training reward to speak of.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+runner:
+  # Trials run through sweep_runner.py rather than train.py directly.
+  wrapper: true
+  # Exactly one episode, then stop. The episode length is read from the env's
+  # own ENV_CONFIG (time_bound / dt) at launch, so it never drifts from the
+  # env definition: car/cartpole/segway 500, turtlebot 600, quadrotor 400.
+  one_episode: true
+  bad_value: 1000.0
+
+parameters:
+  # ── The CV-STEM LMI itself ───────────────────────────────────────────── #
+  #   (W̄-I)/dt + A·W̄ + W̄·Aᵀ - 2ν·B R⁻¹Bᵀ + 2λ·W̄ ⪯ -ε·I,   I ⪯ W̄ ⪯ χ·I
+  # ν and χ are free decision variables shared across all samples (the reference
+  # program), so there is no w_lb/w_ub envelope left to sweep.
+  # Every knob below is a term of that inequality, i.e. this sweep asks which
+  # envelope actually contracts — which is also why infeasibility has to be a
+  # recorded datapoint (see runner.bad_value) rather than a dead run.
+  cm.lbd:
+    values: [0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+  # ε, the strict-definiteness margin. Unlike a pure objective weight it
+  # tightens the constraint itself, so raising it can flip a solvable state
+  # infeasible while lowering it buys feasibility at the cost of a weaker
+  # certificate.
+  cm.cm_eps:
+    values: [0.001, 0.01, 0.1, 1.0]
+  # Two values only, as a falsification probe rather than a search: r is
+  # believed inert (see below), and this checks that across the whole lbd grid
+  # instead of at the single point it was measured. If the two values give the
+  # same auc_mean everywhere, drop it back out of the sweep.
+  agent.r_scaler:
+    values: [0.01, 1.0]

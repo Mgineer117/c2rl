@@ -1,0 +1,73 @@
+name: CI
+
+# The whole suite runs without Isaac Sim: the classic analytical environments are
+# pure NumPy/torch, and the Isaac-side contracts are checked statically (AST +
+# config files) rather than by launching a simulator. See tests/test_isaac_parity.py.
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      # Bug classes only (dead code, undefined names, bare except), not style.
+      # A repo-wide style pass would mean reordering imports, and this project has
+      # load-bearing import order — scripts/skrl/train.py must import AppLauncher
+      # before anything else on the Isaac route. Style is handled by pre-commit.
+      - run: ruff check source scripts tests --select F401,F811,F821,F841,E711,E712,E714,E722
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install (CPU torch — no CUDA wheels needed in CI)
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "skrl>=2.0.0" "gymnasium>=0.29" pyyaml scipy "cvxpy<1.7" pytest
+      - run: python -m pytest tests -q
+
+  smoke:
+    # One short end-to-end run per algorithm. Catches breakage that unit tests
+    # cannot: a config key that silently stops being applied still imports fine.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        algorithm: [ppo, sac, lqr, sdlqr, cvstem-lqr, c2rl-ppo, c2rl-sac]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install "skrl>=2.0.0" "gymnasium>=0.29" pyyaml scipy "cvxpy<1.7" tqdm
+      - name: Train ${{ matrix.algorithm }} on classic-car-v0
+        run: |
+          python scripts/skrl/train.py --classic --task classic-car-v0 \
+            --algorithm ${{ matrix.algorithm }} --num_timesteps 200 \
+            --num_envs 8 --device cpu --no_wandb --skip_final_eval

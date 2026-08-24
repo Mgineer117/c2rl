@@ -1,0 +1,71 @@
+label: c2rl (rl=ppo, cm=ccm)
+algorithm: c2rl-ppo
+num_envs: 1024
+
+# Exhaustive grid, not bayes — see c2rl-ppo-cvstem.yaml. Every parameter must be
+# a discrete `values:` list; build_sweep.py rejects a `distribution:` here.
+method: grid
+
+metric:
+  # AUC, minimized — same target as the cvstem sibling. Stated explicitly here
+  # because it used to be implicit: patch_auc_checkpoint overwrote
+  # "Reward / Total reward (mean)" with -Stability/auc_mean, so naming the
+  # reward key and maximizing it silently meant "minimize AUC". That overwrite
+  # is gone (the reward panels are real rewards again), so the intent has to be
+  # spelled out or this sweep would quietly switch to optimizing raw reward.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+parameters:
+  # Coarser than the cvstem sweep's 7-point ladder: ccm additionally enumerates
+  # the {w_lb, w_ub} pairs and cmg_regress_lr, and the full cross product has to
+  # stay in the low hundreds to be walkable.
+  agent.discount_factor:
+    values: [0.1, 0.5, 0.9, 0.99]
+  # Non-biasing running-std reward normalizer (r/std, no centering) — see rl_glue.
+  agent.use_reward_norm:
+    values: [true, false]
+  # ── CAPS action smoothness — see c2rl-ppo-cvstem.yaml ───────────────────── #
+  # Temporal term only; the spatial term is pinned off (these envs are
+  # analytically modeled and noise-free, which is what it would buy robustness
+  # against). 0.0 stays in the ladder as the regularizer-free control.
+  agent.caps_temporal_scale:
+    values: [0.0, 0.01, 0.05, 0.2, 1.0]
+  agent.caps_spatial_scale:
+    value: 0.0
+  agent.caps_spatial_std:
+    value: 0.05   # inert while caps_spatial_scale is 0.0
+  # Pinned at the concluded search result for this env (see the per-env yaml);
+  # models.policy.backbone is pinned there too and no longer swept here.
+  agent.rollouts:
+    value: 4
+  agent.gae_lambda:
+    value: 0.99
+  agent.ratio_clip:
+    value: 0.3
+  agent.std_dev_annealing_kwargs.schedule:
+    value: exponential
+  # ccm has no SDP, so the CMG's own direct-synthesis learning rate is swept
+  # (cvstem instead sweeps cvstem_r_scaler, which sets R in the SDP's Riccati
+  # term) — see c2rl.py's module docstring on cmg_method.
+  cmg.cmg_regress_lr:
+    values: [3.0e-4, 3.0e-3]
+  # w_lb/w_ub bound W(x)'s eigenvalues (w_lb·I ⪯ W ⪯ w_ub·I) and must stay
+  # w_lb < w_ub — sweeping them as two independent flat parameters risks
+  # bayes sampling an inverted/degenerate pair. A categorical parameter
+  # whose values are {w_lb, w_ub} dicts is wandb's nested-parameter form —
+  # it flattens to the same "cm.w_lb"/"cm.w_ub" CLI flags as flat keys
+  # would (see W&B sweep docs on nested parameters), but samples each pair
+  # jointly so w_lb < w_ub always holds. ccm-only: cvstem already fixes them
+  # indirectly via its cm_data_path cache key.
+  cm:
+    values:
+      - {w_lb: 0.5, w_ub: 1.5}
+      - {w_lb: 0.1, w_ub: 1.0}
+      - {w_lb: 1.0, w_ub: 10.0}
+  cm.cmg_method:
+    value: ccm
+  cm.control_scaler:
+    values: [0.0, 0.5]
+  agent.learning_rate_scheduler_kwargs.kl_threshold:
+    value: 0.02

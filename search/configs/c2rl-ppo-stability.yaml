@@ -1,0 +1,104 @@
+label: c2rl (rl=ppo, cm=cvstem) — training-stability search, reward FROZEN
+algorithm: c2rl-ppo
+num_envs: 1024
+
+# Bayes. The space below is the "how large a step does PPO take on a
+# noise-dominated advantage" family, and its knobs interact strongly (mini_batches
+# x kl_threshold x learning_rate is the whole trust region here, since the LR
+# scheduler is null), so a surrogate is worth more than a grid.
+method: bayes
+
+metric:
+  # AUC, minimized: the outcome that actually matters, and the same metric every
+  # other sweep here reports, so trials stay comparable with the LQR/C3M/CV-STEM
+  # baselines.
+  #
+  # Not a training-oscillation statistic, deliberately. Measured on segway across
+  # four configurations, oscillation rate and final AUC are anti-correlated: the
+  # stock config oscillates most (14.0% direction reversals) and scores the best
+  # AUC (4.33), while the calmest config (6.7%) scores 90.4. Optimizing smoothness
+  # would therefore select for the wrong thing.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+runner:
+  # A trial that dies without writing the metric is ignored by bayes bookkeeping,
+  # so the same dead region gets resampled forever. The wrapper makes the wall a
+  # real datapoint. The CM dataset is cached and cm.* is not swept here, so an
+  # infeasible SDP is not expected -- this is a backstop, not a workhorse.
+  wrapper: true
+  bad_value: 1.0e3
+
+extra_flags:
+  - "--ref_offset"
+  - "1"
+  # Early termination pinned off. It is not a reward change, but it is an MDP
+  # change, and it was measured a wash on segway (AUC 4.455 on vs 4.191 off, one
+  # seed) while costing ~7x wall-clock -- every early reset regenerates a full
+  # 500-step reference. Off keeps trials cheap and keeps this sweep measuring the
+  # optimizer, which is what it is for.
+  - "--no_terminate_out_of_box"
+
+# ── not swept, and this is the point of the sweep ────────────────────────── #
+# The reward is frozen: no reward_euclidean / reward_level, and no cm.* axis
+# (tracking_scaler, control_scaler, w_lb/w_ub, lbd, cvstem_r_scaler, cmg_method,
+# eig_reshape). The Mahalanobis decrement r = V_t - V_{t+1} against the frozen
+# CV-STEM metric is exactly what it is today. Every axis below is an optimizer,
+# trust-region, critic or discount knob.
+parameters:
+  # ── Trust region: the load-bearing group ──────────────────────────────── #
+  # learning_rate_scheduler is null for c2rl-ppo, so kl_threshold (PPO's own
+  # per-Minibatch early stop) is the only trust region, and mini_batches sets how
+  # many steps get taken before it can fire. Measured: 7.4% of updates currently
+  # hit the stop at 0.008.
+  agent.learning_rate:
+    distribution: log_uniform_values
+    min: 1.0e-6
+    max: 1.0e-3
+  agent.kl_threshold:
+    values: [0.002, 0.004, 0.008, 0.016, 0.032, 0.064]
+  # 1 = one full-batch step per epoch, the least noisy update available.
+  agent.mini_batches:
+    values: [1, 2, 4, 8, 16]
+  agent.learning_epochs:
+    values: [1, 2, 5, 10]
+  agent.ratio_clip:
+    values: [0.05, 0.1, 0.2, 0.3]
+  # Applied jointly over chain(policy, value) in skrl, so it couples the two.
+  agent.grad_norm_clip:
+    values: [0.1, 0.5, 1.0, 5.0]
+
+  # ── Advantage scaling ─────────────────────────────────────────────────── #
+  agent.gae_lambda:
+    values: [0.9, 0.95, 0.99, 1.0]
+
+  # ── Critic ────────────────────────────────────────────────────────────── #
+  # Scales only the value gradient (skrl shares one optimizer between policy and
+  # value, so agent.learning_rate cannot raise the critic alone). Capped at 2.0:
+  # 10.0 was measured to drive explained variance in the good-policy regime from
+  # -0.24 to -191 and AUC from 4.33 to 152.7, i.e. far past useful.
+  agent.value_loss_scale:
+    values: [0.1, 0.25, 0.5, 1.0, 2.0]
+
+  # ── Horizon ───────────────────────────────────────────────────────────── #
+  # gamma is a discount, not a reward term, so the frozen-reward constraint is
+  # intact. It matters here: at the current 0.01 the return is one reward, and
+  # critic explained variance in the good-policy regime is -0.24 (worse than
+  # predicting the mean); at 0.9 it measured +0.003. The reference window is sized
+  # AUTO from this value (RefWindow.length_for_horizon), so the observation
+  # follows the discount instead of being evaluated against a stale length.
+  # Pin this to 0.01 if the discount is meant to be held fixed too.
+  agent.discount_factor:
+    values: [0.01, 0.1, 0.5, 0.9, 0.99]
+
+  # ── Exploration ───────────────────────────────────────────────────────── #
+  # The policy std sat at 0.95 for an entire 20k-step run (no entropy bonus, no
+  # annealing), so the policy never sharpens. Not a cause of falls -- sigma=1.0
+  # on top of a stabilizing controller measured 0% falls -- but it caps final
+  # precision.
+  agent.std_dev_annealing:
+    values: [true, false]
+  agent.entropy_loss_scale:
+    values: [0.0, 0.001, 0.01]
+  agent.rollouts:
+    values: [8, 16, 24, 48]

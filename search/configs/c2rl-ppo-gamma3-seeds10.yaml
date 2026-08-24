@@ -1,0 +1,49 @@
+label: c2rl-ppo gamma x seed (3 discount factors x 10 seeds, grid)
+algorithm: c2rl-ppo
+num_envs: 1024
+
+# GRID, not bayes — this is not a search. It is a fixed factorial design: every
+# (discount_factor, seed) cell must run exactly once. Bayes would concentrate
+# trials wherever the metric looked good and leave cells empty, which is exactly
+# wrong when the point is a per-gamma distribution over seeds.
+# 3 x 10 = 30 trials per env; `build_sweep.py --count` prints that before launch.
+method: grid
+
+metric:
+  # Recorded, not optimized: a grid ignores the metric when proposing trials.
+  # Kept as auc_mean so these runs sit on the same scale as every other sweep
+  # here, and so runner.bad_value below has a sign to match.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+runner:
+  # An infeasible CM SDP finishes without writing the metric, and a metric-less
+  # run is indistinguishable from a cell that was never run — so it would
+  # silently shrink the seed count for that gamma instead of showing up as a
+  # failure. The wrapper makes the wall a real datapoint.
+  wrapper: true
+  bad_value: 100.0
+
+extra_flags:
+  # Stride only. ref_length is deliberately NOT fixed — see discount_factor.
+  - "--ref_offset"
+  - "1"
+  # No --num_timesteps here on purpose: the horizon belongs to the env yaml
+  # (car 100k, car_v1 300k), and only the swept axes are passed on the CLI.
+  # The two envs therefore train for different lengths, which is fine for the
+  # WITHIN-env gamma comparison this grid is for, and not comparable ACROSS envs.
+
+parameters:
+  # The reference window is sized per-trial from gamma
+  # (RefWindow.length_for_horizon), so each discount factor gets an observation
+  # spanning its own effective horizon 1/(1-gamma): gamma=0.99 -> 101 points,
+  # gamma=0.01 -> 2. Pinning ref_length across this range would make the
+  # high-gamma cells a POMDP and confound the very comparison being run.
+  # 0.999 spans the whole 500-step episode (ref_length clamps to 500) — that
+  # cell is deliberately the extreme end of the sweep.
+  agent.discount_factor:
+    values: [0.01, 0.99, 0.999]
+  # 10 seeds per gamma. train.py's --seed wins over the env yaml's own `seed:`
+  # (see its "CLI arg wins" note), so this is the whole seed control.
+  seed:
+    values: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]

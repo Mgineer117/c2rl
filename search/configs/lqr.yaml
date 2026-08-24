@@ -1,0 +1,18 @@
+label: lqr
+algorithm: lqr
+num_envs: 64
+
+metric:
+  # AUC of the normalized error curve e(t)/e(0) — minimized, since it directly
+  # measures the certified contraction quantity rather than a training proxy.
+  # StatManagerEnvWrapper injects a fresh Stability/* dict into info["log"]
+  # every env.step() regardless of algorithm, so this is always populated
+  # once the eval-buffer envs complete their first episode.
+  name: "Stability/auc_mean"
+  goal: minimize
+
+parameters:
+  agent.Q_scaler:
+    values: [0.1, 0.3, 1.0, 3.0, 10.0]
+  agent.R_scaler:
+    values: [0.0, 0.01, 0.1, 0.3, 0.5, 1.0]
