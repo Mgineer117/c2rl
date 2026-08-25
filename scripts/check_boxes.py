@@ -65,7 +65,6 @@ def shipped_dataset(env_name: str) -> pathlib.Path | None:
 def check_env(env_name: str, n: int, seed: int) -> dict:
     import c2rl.tasks.direct.classic as classic
     import gymnasium as gym
-    import torch
 
     env = gym.make(classic.env_id(env_name), num_envs=64, device="cpu").unwrapped
     lo = env.X_MIN.detach().cpu().numpy().astype(np.float64)

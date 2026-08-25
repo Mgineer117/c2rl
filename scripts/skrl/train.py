@@ -155,6 +155,14 @@ parser.add_argument("--terminate_out_of_box", "--terminate-out-of-box",
                     dest="terminate_out_of_box", action="store_true", default=None)
 parser.add_argument("--no_terminate_out_of_box", "--no-terminate-out-of-box",
                     dest="terminate_out_of_box", action="store_false")
+# Report that excursion on `terminated` rather than `truncated`. Zeroes the GAE
+# bootstrap, which on a cost reward is a suicide bonus — see
+# BaseEnv.set_terminate_out_of_box.__doc__ before using it.
+parser.add_argument("--terminate_as_terminal", "--terminate-as-terminal",
+                    dest="terminate_as_terminal", action="store_true", default=False)
+# C2RL only: penalise ||u - uref||^2 in the reward (residual trust anchor).
+_ov.add_argument("--residual_anchor_scale", "--residual-anchor-scale",
+                 dest="residual_anchor_scale", type=float, default=None)
 _ov.add_argument("--pretrain_critic_steps", "--pretrain-critic-steps",
                  dest="pretrain_critic_steps", type=int, default=None)
 _ov.add_argument("--pretrain_critic_epochs", "--pretrain-critic-epochs",
@@ -163,6 +171,7 @@ _ov.add_argument("--pretrain_critic_lr", "--pretrain-critic-lr",
                  dest="pretrain_critic_lr", type=float, default=None)
 _ov.add_argument("--disable_advantage_norm", "--disable-advantage-norm",
                  dest="disable_advantage_norm", action="store_true", default=None)
+_ov.add_argument("--value_loss_scale", "--value-loss-scale", type=float, default=None)
 _ov.add_argument("--grad_norm_clip", "--grad-norm-clip", type=float, default=None)
 _ov.add_argument("--use_state_norm", "--use-state-norm", "--ppo_use_state_norm",
                  "--ppo-use-state-norm", type=str, default=None)

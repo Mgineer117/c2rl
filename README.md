@@ -48,8 +48,8 @@ NumPy/gymnasium and need none of this — see [Classic analytical environments](
 ### 2. Clone this repo
 
 ```bash
-git clone <repo-url> C2RL
-cd C2RL
+git clone https://github.com/Mgineer117/c2rl.git
+cd c2rl
 ```
 
 ### 3. Install the C2RL extension
@@ -134,7 +134,8 @@ python scripts/list_envs.py --keyword classic
 
 Every path-tracking environment (Isaac and classic) shares the same contraction-compatible
 observation layout `obs = [x, x_ref, u_ref]` and quadratic tracking reward `r = -‖x - x_ref‖²`,
-so all seven algorithms (PPO, SAC, C3M, LQR, SD-LQR, C2RL-PPO, C2RL-SAC) can train/evaluate in any of them.
+so all eight algorithms (PPO, SAC, C3M, LQR, SD-LQR, CV-STEM-LQR, C2RL-PPO, C2RL-SAC) can
+train/evaluate in any of them.
 
 ### Velocity-tracking (Isaac)
 
@@ -222,7 +223,7 @@ network's input (`agents/skrl/angle_utils.py`); the env/error/dynamics stay in r
 
 #### Supported algorithms
 
-All seven algorithms work in every path-tracking env:
+All eight algorithms work in every path-tracking env:
 
 | Algorithm | Entry point key |
 |-----------|----------------|
@@ -238,7 +239,10 @@ All seven algorithms work in every path-tracking env:
 
 ### Classic analytical environments
 
-**Tasks:** `classic-car-v0`, `classic-cartpole-v0`, `classic-segway-v0`, `classic-turtlebot-v0`
+**Tasks:** twelve are registered — `classic-car-v0`, `classic-car-v1`, `classic-cartpole-v0`,
+`classic-segway-v0`, `classic-turtlebot-v0`, `classic-quadrotor-v0`, plus `aircraft`, `auv`,
+`ball_and_beam`, `pvtol`, `tora`, `two_link_arm`. `python scripts/list_envs.py --keyword classic`
+lists them without loading Isaac Sim.
 
 Pure-Python/NumPy gymnasium envs, no Isaac Sim dependency (`tasks/direct/classic/`). All share
 `common/env_base.py`'s `BaseEnv` and the same `obs = [x, x_ref, u_ref]` / `r = -0.5·‖x-x_ref‖²`
@@ -252,6 +256,7 @@ Dynamics are control-affine, `ẋ = f(x) + B(x)u`:
 | Env | State `x` | Control `u` | dt | `time_bound` | steps | Dynamics |
 |---|---|---|---|---|---|---|
 | car | `[p_x,p_y,θ,v]` (4) | `[ω,a]` (2) | 0.03s | 15.0s | ≤500 | Dubins-like car with velocity state |
+| car-v1 | `[p_x,p_y,θ,v]` (4) | `[ω,a]` (2) | 0.03s | 15.0s | ≤500 | same plant as car, weaker velocity authority (`v ∈ [0.2, 2]`) |
 | cartpole | `[p,θ,v,ω]` (4) | `[F]` (1) | 0.03s | 15.0s | ≤500 | standard nonlinear cartpole ODE |
 | segway | `[x,θ,v,ω]` (4) | `[τ]` (1) | 0.03s | 15.0s | ≤500 | segway balance ODE (fixed numeric coefficients) |
 | turtlebot | `[x,y,θ]` (3) | `[v,ω]` (2) | 0.05s | 30.0s | ≤600 | pure kinematic unicycle (`f(x)=0`) |
@@ -259,15 +264,32 @@ Dynamics are control-affine, `ẋ = f(x) + B(x)u`:
 Reward config for all four: `q=1.0, r=0.0`, i.e. effective reward is `-0.5·‖x-x_ref‖²` with no
 control-cost term active (`control_effort` is computed but its weight `r` is 0).
 
-**Termination** is always `False` — episodes only truncate at their sampled length (`time_steps
-== episode_len - 1`), and `episode_len` can be *shorter* than `time_bound/dt` if the analytically
-generated reference exits its position bounds early during `system_reset`.
+**Termination.** Each env declares a certified state box `[X_TERMINATION_MIN,
+X_TERMINATION_MAX]`, and by default an episode ends the first step the state leaves it. The
+excursion is reported as **truncation, not termination**: skrl's GAE uses `not_done = ~terminated`,
+so flagging it as terminated would replace the continuation value `V(x)` with zero — and since
+every reward here is a cost (`V < 0`), ending the episode early would then be strictly better than
+continuing, a suicide bonus that some seeds find and others do not. On the truncation channel with
+`time_limit_bootstrap: true` (set in every classic ppo/c2rl-ppo yaml) skrl adds `γ·V(x_final)` back
+and the agent is indifferent to the cut, with no terminal penalty to tune.
+
+`cartpole` and `segway` ship with the box **disabled** (`"terminate_out_of_box": False` in their
+`ENV_CONFIG`). Both are unstable plants whose initial state is drawn far from the reference, so
+with the box armed every episode ended within a few steps — and when no episode in a round
+survives, `stability_summary()` deliberately withholds AUC / contraction rate / overshoot / score
+rather than publish a stale value, reporting only `Stability/early_end_frac`. Running the full
+horizon lets AUC measure the divergence instead. The cost is that a diverged episode then
+contributes its remaining off-distribution steps to the rollout batch, a known source of
+seed-to-seed variance on those two envs.
+
+Episodes also truncate at their sampled length, which can be *shorter* than `time_bound/dt` if the
+analytically generated reference exits its position bounds early during `system_reset`.
 
 Episode lengths above (15s for car/cartpole/segway, 30s for turtlebot) target a contraction rate
 λ≈0.3, same reasoning as the manipulator env — see the note under
 [Velocity-tracking](#velocity-tracking-isaac).
 
-Uses `--classic` flag (no Isaac Sim needed). All six algorithms are supported.
+Uses the `--classic` flag (no Isaac Sim needed). All algorithms are supported.
 
 ---
 
@@ -383,7 +405,7 @@ python scripts/skrl/train.py --task Quadruped-PathTracking-v0 --algorithm c3m --
 python scripts/skrl/train.py --task Quadruped-PathTracking-v0 --algorithm sdlqr --headless
 python scripts/skrl/train.py --task Quadruped-PathTracking-v0 --algorithm lqr --headless
 
-# C2RL — quadruped (two-policy online RL, on top of PPO or SAC)
+# C2RL — quadruped (single policy on the frozen-CMG Mahalanobis reward, on PPO or SAC)
 python scripts/skrl/train.py --task Quadruped-PathTracking-v0 --algorithm c2rl-ppo --headless
 python scripts/skrl/train.py --task Quadruped-PathTracking-v0 --algorithm c2rl-sac --headless
 
@@ -695,74 +717,96 @@ Applies `u = uref − K(x_ref)·e`.
 
 ---
 
+### CV-STEM-LQR
+
+Tsukamoto's CV-STEM / Neural Contraction Metric controller (`AstroHiro/ncm`). **Analytical — no
+learnable RL parameters**, like LQR/SD-LQR: `update()` is a no-op. The deployed law is
+
+```
+u = u_ref − K(x)·(x − x_ref),    K(x) = R⁻¹·B(x)ᵀ·M(x)
+```
+
+with the same `R = cvstem_r_scaler·I` that the metric SDP's Riccati term uses, so `K` is the
+certified CV-STEM gain rather than a separately tuned one.
+
+The pipeline runs offline, once, at construction:
+
+1. **Sample** `cm_samples` states i.i.d. uniform over the env's state box.
+2. **Solve one joint SDP** over all of them (`cvstem_joint`): a per-state `W̄_k` with a single
+   **shared** `ν` and `χ`, the `(W̄−I)/dt` Ẇ term, minimizing `J = χ/λ + ν`. One program covers
+   every sample, so an infeasible solve aborts the run — there is no per-state λ-backoff and no
+   partial-feasibility rate to report.
+3. **Fit** `chol(W_k⁻¹)` with `CholMetric` (`regress_cholm`). That network is the metric from then
+   on; `M = RᵀR` is SPD by construction, with no eigenvalue bound anywhere.
+
+λ is either taken from the configured `lbd`, or line-searched (walk λ up, take `argmin J`) when
+`lbd_linesearch: [lo, hi, da]` is set. `scripts/find_uniform_lambda.py` runs the same program at a
+smaller sample count to pick `lbd` cheaply before committing to the shipped size.
+
+One subtlety worth knowing: `cm_dt` is the CV-STEM **sampling period**, not the integrator step —
+the reference implementation synthesizes at `dt=1` while its simulation runs at `0.1`.
+
+A driftless plant (`f ≡ 0`, e.g. `classic-turtlebot-v0`) is CV-STEM-infeasible at every λ by
+construction; use C2RL with `cmg_method: ccm` there instead.
+
+---
+
 ### C2RL (Contraction-Certified RL)
 
-Two-policy architecture, built on top of a chosen base algorithm (`c2rl-ppo` uses two official
-skrl `PPO` sub-agents, `c2rl-sac` uses two official skrl `SAC` sub-agents) that share one CMG:
+**One** policy, trained by one real skrl `PPO` (`c2rl-ppo`) or `SAC` (`c2rl-sac`) sub-agent
+against a Mahalanobis tracking reward built from a **frozen** contraction metric. (Earlier
+revisions used two policies with separate discounts; that design is gone.)
 
-- **con_policy** ("contracting", `gamma_con` ≈ 0) and **opt_policy** ("optimal", `gamma_opt`, e.g.
-  0.99) optimise the **same** Mahalanobis tracking reward
-  `−tracking_scaler·‖e‖²_M/std − control_scaler·‖u−uref‖²/std` (`M(x)` = the CMG's current metric)
-  — they differ only in discount factor, not in reward. opt_policy is what's actually deployed at
-  inference unless `con_only: true`.
-- con_policy's mean control and its state-Jacobian `K = du/dx` are what the CMG (CCM generator,
-  same architecture as C3M) is trained against — opt_policy plays no role in shaping the metric.
-  The CMG loss is `pd_loss + c1_loss + c2_loss`: `pd_loss` certifies the closed-loop system under
-  con_policy (`Cu ≺ 0`), while `c1_loss`/`c2_loss` are C3M's own `C1`/`C2` conditions on the CMG
-  alone (no policy involvement), shaping `W(x)` to admit some contracting controller.
+**Two phases.**
 
-**Per-epoch workflow** (`C2RLSkrlTrainer.train()`, one iteration of the outer loop):
+1. **Phase A — synthesize the metric, then freeze it.** `cmg_method` picks how:
+   - `cvstem` — sample `cmg_memory_size` states, solve one SDP per state for `W*(x)`
+     (`scripts/build_cm_dataset.py`), then MSE-regress the CMG onto the feasible `{x → W*}`
+     (`regress_cmg`). No differentiable certificate loss. The solve is expensive, so the result is
+     cached under `data/` and the agent **refuses to run** rather than silently re-solve when no
+     cached dataset matches the config.
+   - `ccm` — train the CMG directly on Manchester's C1 (contraction) and C2 (killing) losses
+     (`train_cmg_ccm`). No SDP, no regression. Required for a driftless plant such as
+     `classic-turtlebot-v0`, which is CV-STEM-infeasible at every λ by construction.
 
-1. **Con rollout** — collect `rollouts` env steps with con_policy acting (its own replay/rollout
-   buffer — PPO: reset every epoch; SAC: a persistent replay buffer, sized independently via
-   `memory_size`).
-2. **update_con** — recompute the Mahalanobis reward from the raw just-collected observations and
-   overwrite the environment reward with it, then take one PPO/SAC gradient step for con_policy
-   (PPO updates explicitly here; SAC recomputes the reward per-minibatch inside a patched
-   `memory.sample()` and defers the actual gradient step to `con_agent.post_interaction()`, so
-   `learning_starts` is still respected).
-3. **Opt rollout** — same as step 1, with opt_policy acting (skipped if `con_only`).
-4. **update_opt** — same as step 2, for opt_policy.
-5. **update_cmg** — refresh the CMG training buffer (fresh `(x, xref, uref)` from `get_rollout`)
-   and take `cmg_updates_per_iter` contraction pd-loss gradient steps against con_policy's mean
-   control/Jacobian.
+   Either way the CMG is frozen before Phase B reads it, and must be a `BoundedCCM_Generator`
+   (hard eigenvalue bounds in the forward pass, not a soft penalty) — the agent raises otherwise.
 
-**Normalization**:
+2. **Phase B — ordinary PPO/SAC against that frozen metric.** The reward is
+   `tracking_scaler·(V_t − V_{t+1}) − control_scaler·‖u‖²`, with `V = eᵀM(x)e` and `e = x − xref`.
+   The tracking term is the per-step **decrease** of `V` — a contraction signal, not a level
+   penalty. `control_scaler` is 0 in every shipped config.
 
-- **Observations** — `use_state_norm: false` in every shipped config (see the PPO/SAC
-  normalization note above for why: with `control`/`mlp` residual backbones, normalizing the obs
-  also normalizes the sliced `uref`, distorting the `u = uref + feedback` law). When enabled,
-  con_agent and opt_agent each get their own independent `RunningStandardScaler` over
-  `[x, xref, uref]` — con_agent's fit to the states con_policy visits, opt_agent's to opt_policy's,
-  and the two can diverge over training. PPO additionally normalizes its value function per
-  sub-agent when `use_value_norm: true`.
-- **Reward** — a *separate* mechanism from the above: the Mahalanobis term (and the optional
-  control-effort term) are each divided by the sqrt of their own EMA'd batch variance
-  (`reward_norm_beta`), tracked on the outer C2RL agent (not per sub-agent), so their scale stays
-  roughly stationary as the CMG's metric shape changes during training.
-- **CMG metric `M(x)` + Mahalanobis reward always use raw observations** — both read straight from
-  the rollout/`get_rollout` tensors, never through a preprocessor. This is deliberate: `M(x)` and
-  `e = x − xref` are physical quantities, and per-dimension normalization would scale `x` and
-  `xref` independently (different observation indices, independent running stats), distorting `e`.
-- **The certified policy Jacobian stays consistent with the deployed policy** — the one part of the
-  CMG loss that touches the policy network (`K = du/dx`) now routes its input through con_agent's
-  *own* observation preprocessor before calling con_policy. With state norm off (the default) that's
-  the identity, so `K` is the raw Jacobian as before; with state norm on, con_policy sees the same
-  normalized obs it was trained/deployed on, and because the normalization stays in the autograd
-  graph while `jacobian(u, x)` still differentiates w.r.t. raw `x`, `K` correctly absorbs the
-  `1/std` factor — the certificate always matches the network's actual input distribution. (This
-  resolves the earlier raw-vs-normalized caveat; C3M never had it, since its policy is never wrapped
-  in an observation-normalizing base agent.)
+**The env computes the reward, not the agent.** `_inject_ccm` hands the frozen CMG to the
+environment via `set_ccm`, and the env's own `get_rewards()` returns the Mahalanobis reward
+natively, so what reaches `record_transition` (and thus PPO's GAE or SAC's replayed critic target)
+is already correct, with no per-algorithm reward plumbing to keep in sync. `_inject_ccm` raises if
+no env accepted the metric — training on the plain baseline reward instead would be invisible in
+every metric.
+
+**Control law.** `u = urefs[0] + π(s)`, where `π = W₂(xrefs)·tanh(W₁(x)·e)` (`CLActor`). π learns
+the entire feedback and the deployed policy stands on its own; there is no analytic base
+controller in the loop and no certificate-based warm start of π.
+
+**Normalization.** The metric and the reward always use **raw** observations. `M(x)` and
+`e = x − xref` are physical quantities, and per-dimension normalization would scale `x` and `xref`
+independently — different observation indices with independent running statistics — distorting `e`.
+`use_state_norm` is `false` in every shipped config.
 
 | Param | Default | Notes |
 |-------|---------|-------|
-| `gamma_con` | 0.0 | Discount for the contracting policy |
-| `gamma_opt` | 0.99 | Discount for the optimal policy (the one deployed, unless `con_only`) |
-| `pd_loss_num_samples` | 128 | Random directions for the `c1_loss`/`c2_loss` PD-violation hinge loss (mirrors C3M) |
-| `tracking_scaler` | 1.0 | Mahalanobis reward scale (Q, shared by both policies) |
-| `control_scaler` | 0.0 | Control-effort penalty weight (R, shared by both policies; 0 = disabled) |
-| `reward_norm_beta` | 0.99 | EMA momentum for the reward-variance normalisation |
-| `cmg_updates_per_iter` | 3 | CMG gradient steps per epoch |
+| `discount_factor` | 0.99 | Discount for the single deployed policy |
+| `cmg_method` | `cvstem` | `cvstem` (SDP + regression) or `ccm` (C1/C2 losses, no SDP) |
+| `lbd` | 1e-2 | Contraction rate λ — used by both methods' synthesis |
+| `tracking_scaler` | 1.0 | Mahalanobis reward scale (Q) |
+| `control_scaler` | 0.0 | Control-effort penalty weight (R); 0 = disabled in every shipped config |
+| `w_lb` / `w_ub` | 0.1 / 10.0 | Envelope `w_lb·I ⪯ W ⪯ w_ub·I`; caps the gain, so changing either invalidates the certified rate |
+| `cvstem_r_scaler` | 1.0 | Riccati weight `R = cvstem_r_scaler·I` (`cvstem` only) |
+| `cm_eps` | 1e-2 | Strict-definiteness margin on the contraction LMI |
+| `cm_solver` | `SCS` | cvxpy SDP solver (`cvstem` only); `MOSEK` if licensed |
+| `cmg_memory_size` | 8192 | States sampled for synthesis; also the cached dataset's `N` |
+| `cmg_regress_epochs` | 1000 | Regression epochs onto `{x → W*}` (`cvstem` only) |
+| `use_state_norm` | false | See Normalization above |
 
 ---
 
@@ -802,7 +846,7 @@ tasks/direct/
 ## Project Structure
 
 ```
-C2RL/
+c2rl/
 ├── commands/                         # every shell entry point lives here
 │   ├── search.sh                     # the sweep entry point (interactive; nohup-detached)
 │   └── run_seeds.sh                  # multi-seed training + aggregated Stability CSV
@@ -814,16 +858,12 @@ C2RL/
 │   │                                 #   applying to every env (see its README.md)
 │   └── logs/                         # Sweep launch logs + the generated sweep.yaml
 │                                     #   (gitignored; one dir per launch)
-├── data/                             # GENERATED DATA, gitignored — inputs to later runs
-│   ├── {robot}/dynamics_data.npz     #   reference trajectories path-tracking envs track
-│   └── classic/{env}/cm_data*.npz    #   synthesized contraction-metric caches
+├── data/                             # GENERATED DATA that is an INPUT to later runs
+│   ├── {robot}/dynamics_data.npz     #   reference trajectories (generated locally)
+│   └── classic/{env}/cm_data*.npz    #   contraction-metric caches — TRACKED, since
+│                                     #   re-solving one is a multi-hour SDP
 ├── logs/                             # RUN OUTPUT — checkpoints, tensorboard, eval json.
 │                                     #   Disposable: deleting it never forces a re-synthesis.
-├── tests/                            # Runs WITHOUT Isaac Sim (see "Testing")
-│   ├── test_configs.py               #   every yaml key is actually applied
-│   ├── test_contraction_metrics.py   #   the four Stability/* metrics' math
-│   ├── test_env_contract.py          #   the getattr-discovered env interface
-│   └── test_isaac_parity.py          #   classic <-> Isaac capability drift
 ├── scripts/
 │   ├── list_envs.py                  # List all envs without Isaac Sim
 │   ├── generate_ref_traj.py          # Manually generate reference trajectories
@@ -863,27 +903,25 @@ C2RL/
 
 ## Testing
 
-The test suite runs **without Isaac Sim** — the classic environments are pure
-NumPy/torch, and the Isaac-side contracts are verified statically (AST + config
-inspection) rather than by launching a simulator.
+CI (`.github/workflows/ci.yml`) runs two jobs on every push:
 
-```bash
-pip install pytest
-python -m pytest tests -q          # 157 tests, ~8 s
-```
+- **lint** — `ruff` restricted to bug classes (unused/undefined names, bare `except`,
+  identity/equality confusions), not style. A repo-wide style pass would reorder imports, and this
+  project has load-bearing import order: `scripts/skrl/train.py` must import `AppLauncher` before
+  anything else on the Isaac route. Style is handled by `pre-commit`.
+- **smoke** — one short end-to-end training run per algorithm (PPO, SAC, LQR, SD-LQR, CV-STEM-LQR,
+  C2RL-PPO, C2RL-SAC) on `classic-car-v0`. This is the check that catches what imports cannot: a
+  config key that silently stops being applied still imports fine and still type-checks, but the
+  run then trains a different algorithm than its config describes.
 
-What each module guards:
+Everything CI needs runs **without Isaac Sim** — the classic environments are pure NumPy/torch.
 
-| File | Guards against |
-|---|---|
-| `tests/test_configs.py` | A yaml key that is **silently dropped** because it is not a field of the algorithm's `Cfg` dataclass — the run then trains a different algorithm than its config describes, without erroring. Also checks SAC↔squashed / PPO↔unbounded backbone pairing. |
-| `tests/test_contraction_metrics.py` | The streaming `auc` / `contraction_rate` / `overshoot` / `contraction_score` math, pinned against closed-form cases (a known exponential must report back its own λ). |
-| `tests/test_env_contract.py` | The duck-typed interface `ContractionRunner` discovers by `getattr`: control-affine `get_f_and_B` shapes, `Bᵀ·B_null ≈ 0`, `x_dot` (not `x_next`) from dynamics rollouts, the divergence guard under saturated actions, and that `set_ccm` actually switches the reward to the Mahalanobis form. |
-| `tests/test_isaac_parity.py` | Capability drift between the two env families — a member wired up on classic but missing on Isaac, mismatched `set_ccm` signatures, divergent reward forms, or an analytic controller left with no dynamics source on Isaac. |
-
-CI (`.github/workflows/ci.yml`) runs these on Python 3.10/3.11, plus one short
-end-to-end training run per algorithm on `classic-car-v0` — because a config key
-that stops being applied still imports and still passes unit tests.
+The project's unit-test suite is developed alongside the code but is not published in this
+repository. It covers the yaml-key-silently-dropped failure mode, the streaming
+`auc`/`contraction_rate`/`overshoot`/`contraction_score` math pinned against closed-form cases,
+the duck-typed env interface (`get_f_and_B` shapes, `Bᵀ·B_null ≈ 0`, `set_ccm` actually switching
+the reward to the Mahalanobis form), and capability drift between the two env families — the last
+checked statically, so it too needs no simulator.
 
 ## Reproducing the Paper Results
 

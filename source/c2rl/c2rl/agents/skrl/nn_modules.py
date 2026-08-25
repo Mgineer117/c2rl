@@ -25,8 +25,8 @@ def _sym_from_names(names):
     return StateSymmetry.from_names(names)
 
 
-from .angle_utils import embed_angles, embedded_dim, wrap_diff
-from .math_utils import bound_W, rescale_residual, spd_inverse
+from .angle_utils import embed_angles, embedded_dim
+from .math_utils import rescale_residual
 from .ref_window import Feats, RefWindow
 
 _MIN_LOG_STD = math.log(0.001)  # ≈ -6.908; annealing floor

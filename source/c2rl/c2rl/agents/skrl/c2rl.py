@@ -63,7 +63,6 @@ Classic envs use analytical ``get_f_and_B`` and skip pretraining.
 from __future__ import annotations
 
 import copy
-import math
 import os
 import sys
 from collections.abc import Callable

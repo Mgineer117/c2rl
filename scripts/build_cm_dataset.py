@@ -27,7 +27,6 @@ import time
 from pathlib import Path
 
 import gymnasium as gym
-import numpy as np
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]

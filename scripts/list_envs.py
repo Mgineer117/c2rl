@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import inspect
-import sys
 import textwrap
 from pathlib import Path
 
