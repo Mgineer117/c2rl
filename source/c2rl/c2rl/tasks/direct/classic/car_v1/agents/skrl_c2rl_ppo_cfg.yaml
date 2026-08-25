@@ -69,10 +69,10 @@ agent:
   class: C2RL-PPO
   # PPO shared config (the single deployed policy's PPO sub-agent).
   rollouts: 24   # Number of environment steps per parallel environment per update
-  learning_epochs: 2  # Number of gradient descent passes over the collected batch
+  learning_epochs: 4  # Number of gradient descent passes over the collected batch
   mini_batches: 8  # Number of subsets to divide the batch into for stochastic optimization
   gae_lambda: 0.99  # Lambda parameter for Generalized Advantage Estimation (GAE)
-  learning_rate: 1.0e-4   # Global step size, truly fixed — no scheduler at all
+  learning_rate: 3.0e-5   # Global step size, truly fixed — no scheduler at all
   # null: no KL-adaptive schedule. learning_rate above is a constant for the
   # whole run, which is what makes it a meaningful search axis — under an
   # adaptive scheduler the swept value is mostly forgotten within a few updates.
