@@ -51,6 +51,15 @@ jobs:
           pip install -e source/c2rl --no-deps
       - name: Train ${{ matrix.algorithm }} on classic-car-v0
         run: |
+          # --ref_length 5, not the AUTO full-episode window. AUTO sizes the
+          # reference window to the whole 500-step episode, giving obs_dim 3004,
+          # and SAC preallocates its replay buffer as
+          # (memory_size 100000, num_envs 8, obs_dim) per tensor -- 9.6 GB for
+          # `states` alone, ~19.6 GB peak measured. A GitHub runner has 7 GB, so
+          # sac and c2rl-sac were OOM-killed (SIGTERM, exit 143, which Actions
+          # reports as "the runner has received a shutdown signal"). A short
+          # window is fine here: this job checks that the config plumbing is
+          # wired up, not that the policy learns anything.
           python scripts/skrl/train.py --classic --task classic-car-v0 \
             --algorithm ${{ matrix.algorithm }} --num_timesteps 200 \
-            --num_envs 8 --device cpu --no_wandb --skip_final_eval
+            --ref_length 5 --num_envs 8 --device cpu --no_wandb --skip_final_eval
