@@ -36,7 +36,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        algorithm: [ppo, sac, lqr, sdlqr, cvstem-lqr, c2rl-ppo, c2rl-sac]
+        # `extra` carries --memory_size only for the two algorithms that own a
+        # replay buffer. PPO-family agents reject it: C2RL/ppo require
+        # memory.memory_size to be -1 or exactly agent.rollouts, so passing 1000
+        # aborts them before training starts.
+        include:
+          - {algorithm: ppo,        extra: ""}
+          - {algorithm: sac,        extra: "--memory_size 1000"}
+          - {algorithm: lqr,        extra: ""}
+          - {algorithm: sdlqr,     extra: ""}
+          - {algorithm: cvstem-lqr, extra: ""}
+          - {algorithm: c2rl-ppo,  extra: ""}
+          - {algorithm: c2rl-sac,  extra: "--memory_size 1000"}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -63,4 +74,4 @@ jobs:
         run: |
           python scripts/skrl/train.py --classic --task classic-car-v0 \
             --algorithm ${{ matrix.algorithm }} --num_timesteps 200 \
-            --memory_size 1000 --num_envs 8 --device cpu --no_wandb --skip_final_eval
+            ${{ matrix.extra }} --num_envs 8 --device cpu --no_wandb --skip_final_eval
