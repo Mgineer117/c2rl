@@ -217,4 +217,12 @@ empirical_dynamics:
 
 trainer:
   class: C2RLSkrlTrainer
-  timesteps: 100000  # Total number of environment steps to train for
+  # 500000, not the 100000 the other three envs share. Sized against measurement:
+  # a 100000-step cartpole seed completed in 39-55 min (gamma=0.99 at ~52 min), so
+  # 500000 is ~3.3-4.6 h, well inside the 48 h wall even at several times that.
+  #
+  # NOTE cartpole and segway are now on 500000 while car-v0 and car-v1 remain on
+  # 100000. Within-env gamma comparisons are unaffected; comparing absolute
+  # numbers across the two groups compares different budgets as well as different
+  # plants.
+  timesteps: 500000  # Total number of environment steps to train for
