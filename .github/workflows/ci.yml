@@ -49,17 +49,18 @@ jobs:
           pip install "skrl>=2.0.0" "gymnasium>=0.29" pyyaml scipy "cvxpy<1.7" tqdm
           # The package itself — without this every algorithm dies at `import c2rl`.
           pip install -e source/c2rl --no-deps
+      # --memory_size 1000: the reference window stays at its real full-episode
+      # size (obs_dim 3004), because exercising the shipped observation layout is
+      # the entire point of this job -- a shape bug that only appears at the full
+      # window has to fail here. What gets shrunk instead is the replay buffer,
+      # which skrl allocates as (memory_size, num_envs, obs_dim) PER ENVIRONMENT:
+      # at the yaml's 100000 that is 9.6 GB for `states` alone and ~19.6 GB peak,
+      # against a runner's 7 GB, so sac and c2rl-sac were OOM-killed (SIGTERM,
+      # exit 143, reported as "the runner has received a shutdown signal"). A
+      # 200-step run fills 200 slots, so 100000 of them were never anything but
+      # waste. Measured: 19.6 GB -> 0.99 GB, full window intact.
       - name: Train ${{ matrix.algorithm }} on classic-car-v0
         run: |
-          # --ref_length 5, not the AUTO full-episode window. AUTO sizes the
-          # reference window to the whole 500-step episode, giving obs_dim 3004,
-          # and SAC preallocates its replay buffer as
-          # (memory_size 100000, num_envs 8, obs_dim) per tensor -- 9.6 GB for
-          # `states` alone, ~19.6 GB peak measured. A GitHub runner has 7 GB, so
-          # sac and c2rl-sac were OOM-killed (SIGTERM, exit 143, which Actions
-          # reports as "the runner has received a shutdown signal"). A short
-          # window is fine here: this job checks that the config plumbing is
-          # wired up, not that the policy learns anything.
           python scripts/skrl/train.py --classic --task classic-car-v0 \
             --algorithm ${{ matrix.algorithm }} --num_timesteps 200 \
-            --ref_length 5 --num_envs 8 --device cpu --no_wandb --skip_final_eval
+            --memory_size 1000 --num_envs 8 --device cpu --no_wandb --skip_final_eval
