@@ -31,7 +31,7 @@ models:
     # is 4.5% of the half-range instead of 33%, so the policy starts near its
     # mean rather than being dominated by its own noise. Inside the
     # min_log_std/max_log_std clamp above, so it is not truncated at init.
-    initial_log_std: -2.0
+    initial_log_std: -0.5
   critic:  # PPO value function V(obs)
     class: DeterministicMixin
     network:
