@@ -33,8 +33,6 @@ parameters:
     value: 0.99
   agent.ratio_clip:
     value: 0.3
-  agent.std_dev_annealing_kwargs.schedule:
-    value: exponential
   # ccm has no SDP, so the CMG's own direct-synthesis learning rate is swept
   # (cvstem instead sweeps cvstem_r_scaler, which sets R in the SDP's Riccati
   # term) — see c2rl.py's module docstring on cmg_method.
@@ -57,5 +55,12 @@ parameters:
     value: ccm
   cm.control_scaler:
     values: [0.0, 0.5]
-  agent.learning_rate_scheduler_kwargs.kl_threshold:
-    value: 0.02
+
+# kl_threshold and std_dev_annealing are NOT searched. Both are now fixed
+# across every env and PPO-family algorithm: the KLAdaptiveLR deadband
+# (kl_threshold 0.004, kl_factor 4 -> decrease above 0.016, increase below 0.001,
+# lr in [1e-6, 1e-4] starting at the floor) and the PPO early stop at 0.016.
+# Re-opening either as a per-env axis is what produced the 0.004/0.016/0.032
+# spread that had no per-plant rationale and went stale the moment the learning
+# rate, learning_epochs and initial_log_std changed. std_dev_annealing is off --
+# PPO learns log_std through the policy loss.

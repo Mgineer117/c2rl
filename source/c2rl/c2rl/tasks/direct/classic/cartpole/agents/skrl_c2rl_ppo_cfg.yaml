@@ -69,42 +69,37 @@ agent:
   learning_epochs: 4  # Number of gradient descent passes over the collected batch
   mini_batches: 8  # Number of subsets to divide the batch into for stochastic optimization
   gae_lambda: 0.99  # Lambda parameter for Generalized Advantage Estimation (GAE)
-  learning_rate: 1.0e-5   # Global step size, fixed — no scheduler (see below)
+  learning_rate: 1.0e-6   # Global step size, fixed — no scheduler (see below)
   # No KL-adaptive schedule: the LR is constant at learning_rate above.
   # (KLAdaptiveLR was steering toward kl_threshold 0.008, but with the PPO
   # early-stop at 0.01 its decrease branch could never fire — that needs
   # mean KL > 0.016 (kl_factor=2), above the stop — so it only ratcheted the
   # LR upward. A fixed LR is the honest version of that behavior.)
-  # KLAdaptiveLR, identical on all four envs. skrl's rule, applied once per
-  # epoch with that epoch's mean KL:
+  # KLAdaptiveLR, identical on every env and every PPO-family algorithm.
+  # skrl steps it once per epoch with that epoch's mean KL:
   #     kl > kl_threshold * kl_factor  ->  lr /= lr_factor  (floor min_lr)
   #     kl < kl_threshold / kl_factor  ->  lr *= lr_factor  (ceil  max_lr)
-  # so kl_factor sets a deadband: this decreases above 0.016 and only increases
-  # below 0.001, which is the asymmetry wanted -- back off on a violation, speed
-  # up only when the step is far smaller than allowed.
+  # kl_threshold 0.004 with kl_factor 4 therefore decreases above 0.016 and
+  # increases only below 0.001 -- back off on a violation, speed up only when the
+  # step is far under budget.
   #
-  # ONE value for every env, deliberately. The old per-env agent.kl_threshold
-  # (0.004 cartpole / 0.016 car,car-v1 / 0.032 segway) was a sweep outcome with
-  # no per-plant rationale, chosen when it was the only trust-region control and
-  # under a different learning rate, learning_epochs and initial_log_std. Deriving
-  # these from it would propagate that stale tuning; letting one controller adapt
-  # per env is what makes Policy / KL divergence (post-update) comparable across
-  # envs in the first place.
+  # Starts at min_lr: learning_rate == min_lr == 1e-6, so the run begins at the
+  # slowest rate the controller may use and has to earn its way up to max_lr 1e-4.
+  # The previous setup started mid-range with max_lr above base, and the scheduler
+  # spent its authority climbing to 2.5x base while KL rose past 0.4.
   #
-  # lr_factor is per EPOCH, not per update: at learning_epochs 4 the rate can
-  # move 1.2^4 ~= 2.1x within a single update. skrl's default 1.5 would be 5x,
-  # which oscillates.
+  # lr_factor is per EPOCH: at learning_epochs 4 the rate moves 1.2^4 ~= 2.1x
+  # within one update, where skrl's default 1.5 would be 5x and oscillate.
   #
-  # Feeds on skrl's epoch-mean of per-mini-batch KLs -- lagging, low-biased and
-  # noisy (see patch_kl_logging_post_update). This pushes KL down on average; it
-  # does NOT bound the post-update value.
+  # Fed skrl's epoch-mean of per-mini-batch KLs, which lags, reads low and is
+  # noisy. This pushes KL down on average; it does not bound the post-update KL.
   learning_rate_scheduler: KLAdaptiveLR
   learning_rate_scheduler_kwargs:
     kl_threshold: 0.004
     kl_factor: 4
     lr_factor: 1.2
-    min_lr: 1.0e-7
-    max_lr: 3.0e-5
+    min_lr: 1.0e-6
+    max_lr: 1.0e-4
   # Off — PPO learns log_std instead of following a fixed schedule.
   # std_dev_annealing_kwargs below is inert while this is false.
   std_dev_annealing: false
@@ -119,7 +114,7 @@ agent:
   value_clip: 0.0  # Clipping bound for the value function update
   entropy_loss_scale: 0.0 # Coefficient to encourage exploration by maximizing action entropy
   value_loss_scale: 0.5  # Weight coefficient for the value function loss term
-  kl_threshold: 0.004 # Early stopping threshold based on Kullback-Leibler divergence
+  kl_threshold: 0.016 # Early stopping threshold based on Kullback-Leibler divergence
   time_limit_bootstrap: true  # Bootstrap value at episode truncation instead of treating it as terminal
   rewards_shaper_scale: 1.0
   use_state_norm: false  # Off by default — see c2rl.py module docstring / rl_glue.make_base_rl_cfg

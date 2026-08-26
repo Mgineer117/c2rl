@@ -76,9 +76,6 @@ parameters:
   # PPO trust-region clip on the probability ratio.
   agent.ratio_clip:
     values: [0.1, 0.2, 0.3]
-  # KLAdaptiveLR early-stop / LR-adaptation target on the policy update.
-  agent.learning_rate_scheduler_kwargs.kl_threshold:
-    values: [0.008, 0.016, 0.032]
   # Gradient passes over each rollout batch, and how finely it is split.
   agent.learning_epochs:
     values: [2, 5, 10]
@@ -99,3 +96,12 @@ parameters:
   # though the deployed policy rarely operates there.
   cm.cmg_method:
     value: cvstem
+
+# kl_threshold and std_dev_annealing are NOT searched. Both are now fixed
+# across every env and PPO-family algorithm: the KLAdaptiveLR deadband
+# (kl_threshold 0.004, kl_factor 4 -> decrease above 0.016, increase below 0.001,
+# lr in [1e-6, 1e-4] starting at the floor) and the PPO early stop at 0.016.
+# Re-opening either as a per-env axis is what produced the 0.004/0.016/0.032
+# spread that had no per-plant rationale and went stale the moment the learning
+# rate, learning_epochs and initial_log_std changed. std_dev_annealing is off --
+# PPO learns log_std through the policy loss.
