@@ -90,7 +90,11 @@ cm:
   # The stage-1 search (N=100, cm_eps=0.1) returns 0.0228, but that rung is
   # LMI-INFEASIBLE at N=1000/0.01 and so could never build at N=10000.
   # Shared with c2rl_ppo per 8a64182.
-  lbd: 0.0152
+  # 0.0514, matching skrl_c2rl_ppo_cfg.yaml. 0.0152 was certified against
+  # the OLD segway box (pitch +-pi/3); the box is now +-0.90 and 0.0514 is
+  # what was certified on it at N=10000. Same envelope and r, so both
+  # algorithms now load one dataset instead of two.
+  lbd: 0.0514
               # "cvstem", CMG Cu/C1 loss for "ccm")
   tracking_scaler: 1.0  # Q: tracking-error weight
   control_scaler: 0.0   # R: control-effort weight (0 = disabled)
