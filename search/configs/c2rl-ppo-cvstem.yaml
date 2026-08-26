@@ -91,24 +91,6 @@ parameters:
     values: [true, false]
   cm.control_scaler:
     values: [0.0, 0.01, 0.1, 1.0]
-  # ── CAPS action smoothness (policy-loss regularizer, not a reward term) ──── #
-  # Only the temporal term ||pi(s_t) - pi(s_t+1)||^2 is searched. CAPS' own
-  # paper notes that temporal smoothness alone "would likely be sufficient for
-  # the desired control smoothness in well-modeled environments": the spatial
-  # term ||pi(s) - pi(s_bar)||^2 buys robustness to state noise and model
-  # error, and the classic envs are analytically modeled and noise-free. So
-  # caps_spatial_scale is pinned at 0.0 — patch_caps_regularizer then skips
-  # that forward pass entirely, and caps_spatial_std below is inert. Re-open it
-  # by giving it a values list. 0.0 stays in the temporal ladder so the search
-  # always contains the regularizer-free control condition (at which the patch
-  # no-ops completely — no hooks, no extra memory tensors).
-  # See agent_patches.patch_caps_regularizer.
-  agent.caps_temporal_scale:
-    values: [0.0, 0.01, 0.1, 1.0]
-  agent.caps_spatial_scale:
-    value: 0.0
-  agent.caps_spatial_std:
-    value: 0.05   # inert while caps_spatial_scale is 0.0
   # Pinned. C2RL consumes the metric only as a reward (not a deployed
   # certificate), so a little per-state λ-backoff and a <100% bar are
   # acceptable: the offline synthesis samples the full uniform state box,

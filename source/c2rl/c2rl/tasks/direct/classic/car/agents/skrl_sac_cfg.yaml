@@ -61,17 +61,6 @@ agent:
   random_timesteps: 1000
   learning_starts: 1000
   grad_norm_clip: 1.0
-  # ── CAPS action smoothness (Mysore et al. 2021) ─────────────────────────── #
-  # Added to the policy loss, not the reward, so the MDP / observation layout /
-  # dynamics are all untouched. Temporal term only by default: the spatial term
-  # buys robustness to state noise and model error, which the analytically
-  # modeled classic envs do not have. Both 0.0 = off, at which the patch no-ops
-  # entirely (no hooks, no extra memory tensors). Override per-run with
-  # --caps_temporal_scale / --caps_spatial_scale / --caps_spatial_std.
-  # See agent_patches.patch_caps_regularizer.
-  caps_temporal_scale: 0.001   # weight on ||pi(s_t) - pi(s_t+1)||^2
-  caps_spatial_scale: 0.0    # weight on ||pi(s) - pi(s_bar)||^2, s_bar ~ N(s, sigma^2)
-  caps_spatial_std: 0.05     # sigma, in raw observation units; inert while the scale is 0.0
 
   experiment:
     directory: car_sac

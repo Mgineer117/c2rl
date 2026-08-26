@@ -56,19 +56,6 @@ agent:
   learning_starts: 0
   grad_norm_clip: 1.0  # Maximum permitted magnitude for gradients (prevents exploding gradients)
   use_state_norm: false  # Off by default — see c2rl.py module docstring / rl_glue.make_base_rl_cfg
-  # ── CAPS action smoothness (Mysore et al. 2021) ─────────────────────────── #
-  # Added to the policy loss, not the reward: pi's mean is penalized for
-  # changing between consecutive states (temporal) and under a small state
-  # perturbation (spatial). Because it is not a reward term, the MDP, the
-  # observation layout and the dynamics are all untouched — so the offline
-  # CV-STEM synthesis and the contraction certificate it produces stay valid,
-  # which a `-||u_t - u_t-1||^2` reward term would not (it needs u_t-1 in the
-  # observation, which breaks the CLActor's obs_dim = 2*x_dim + u_dim layout).
-  # Both 0.0 = off. Override per-run with --caps_temporal_scale /
-  # --caps_spatial_scale / --caps_spatial_std. See patch_caps_regularizer.
-  caps_temporal_scale: 0.001   # weight on ||pi(s_t) - pi(s_t+1)||^2
-  caps_spatial_scale: 0.0    # weight on ||pi(s) - pi(s_bar)||^2, s_bar ~ N(s, sigma^2)
-  caps_spatial_std: 0.05     # sigma, in raw observation units (see patch_caps_regularizer)
   discount_factor: 0.99  # deployed policy's discount factor (single policy — no con/opt duality)
   # NOTE: the contraction-metric / Mahalanobis-reward config (cmg_method, w_ub,
   # w_lb, lbd, tracking_scaler, control_scaler, cm_eps, cm_solver) lives in the

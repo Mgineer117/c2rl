@@ -87,40 +87,6 @@ def _inject_angle_idx(agent_cfg: dict, angle_idx: list, sym=None) -> None:
                 block.setdefault("sym", sym)
 
 
-def _resolve_caps_kwargs(agent_cfg: dict, args_cli, *, pop: bool) -> dict:
-    """Resolve CAPS coefficients from ``agent:`` yaml, overridden by ``--caps_*``.
-
-    Shared by both of train.py's routes (classic ``--classic`` and Isaac Lab) and
-    by both agent families, so one flag means the same thing everywhere. Returns
-    kwargs for ``agent_patches.patch_caps_regularizer``.
-
-    ``pop=True`` for the standalone PPO/SAC route: there ``agent_cfg["agent"]``
-    is handed to skrl's Runner, which builds a PPO_CFG/SAC_CFG from it and
-    rejects unknown fields — so the caps_* keys have to leave the dict once
-    read, and the caller applies the returned kwargs itself.
-
-    ``pop=False`` for the C2RL route: C2RL declares caps_* as real fields on
-    C2RLPPOCfg/C2RLSACCfg and applies the patch to its own inner PPO/SAC
-    sub-agent, so the keys stay — and any ``--caps_*`` override is written back
-    into the dict, which is the only way the flag reaches that route at all.
-
-    Sweeps set these through ``agent.caps_*`` (see search/configs/); the CLI
-    flags are for one-off runs and win over the yaml when passed.
-    """
-    block = agent_cfg.get("agent", {})
-    read = block.pop if pop else block.get
-    kwargs = {}
-    for flag, key, default in (("caps_temporal_scale", "temporal_scale", 0.0),
-                               ("caps_spatial_scale", "spatial_scale", 0.0),
-                               ("caps_spatial_std", "spatial_std", 0.05)):
-        value = read(flag, default)
-        override = getattr(args_cli, flag, None)
-        if override is not None:
-            value = override
-            if not pop:
-                block[flag] = value
-        kwargs[key] = float(value)
-    return kwargs
 
 
 def disable_tensorboard_files() -> None:
@@ -386,7 +352,7 @@ def normalize_agent_cfg(agent_cfg: dict, *, algorithm: str) -> dict:
     }
 
 
-def apply_agent_patches(agent, *, algorithm: str, annealing: dict, caps: dict,
+def apply_agent_patches(agent, *, algorithm: str, annealing: dict,
                         namespace: bool = True) -> None:
     """Apply every post-construction patch an agent needs, in dependency order.
 
@@ -404,7 +370,6 @@ def apply_agent_patches(agent, *, algorithm: str, annealing: dict, caps: dict,
         best_metric_for,
         patch_algo_namespace,
         patch_auc_checkpoint,
-        patch_caps_regularizer,
         patch_kl_logging,
         patch_ppo_std_annealing,
         patch_prune_checkpoints,
@@ -415,7 +380,6 @@ def apply_agent_patches(agent, *, algorithm: str, annealing: dict, caps: dict,
     patch_sac_entropy_clamp(agent)
     patch_ppo_std_annealing(agent, annealing["std_dev_annealing"],
                             annealing["std_dev_annealing_kwargs"])
-    patch_caps_regularizer(agent, **caps)
     if namespace:
         patch_algo_namespace(agent, algorithm.upper())
     # Wraps write_checkpoint (not post_interaction), so it is independent of

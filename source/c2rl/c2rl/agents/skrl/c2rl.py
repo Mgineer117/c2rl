@@ -131,13 +131,6 @@ class C2RLPPOCfg(AgentCfg):
     # the exploration a swept discount factor requires -- a gamma=0.999 run and
     # a gamma=0.01 run want very different exploration at the same step count.
     std_dev_annealing: bool = False
-    # CAPS action-smoothness regularization on the policy loss (both 0 = off).
-    # Not a reward term: it leaves the MDP, the observation and the dynamics
-    # untouched, so the offline CV-STEM synthesis stays valid. See
-    # agent_patches.patch_caps_regularizer.
-    caps_temporal_scale: float = 0.0  # weight on ||pi(s_t) - pi(s_{t+1})||^2
-    caps_spatial_scale: float = 0.0   # weight on ||pi(s) - pi(s_bar)||^2, s_bar ~ N(s, sigma^2)
-    caps_spatial_std: float = 0.05    # sigma, in raw observation units (see patch_caps_regularizer)
     # Set by ContractionRunner from the yaml `memory:` block's memory_size, not
     # read from `agent:` directly; declared purely so filter_cfg_fields()
     # recognizes it instead of warning.
@@ -327,10 +320,6 @@ class C2RLSACCfg(AgentCfg):
     use_reward_norm: bool = False  # non-biasing running-std reward normalizer (r/std) — see rl_glue.make_base_rl_cfg
     rewards_shaper_scale: float = 1.0  # yaml convenience for SAC_CFG's rewards_shaper — see rl_glue.make_base_rl_cfg
     std_dev_annealing_kwargs: dict | None = None  # forwarded to patch_ppo_std_annealing()
-    # CAPS action-smoothness regularization — see C2RLPPOCfg / patch_caps_regularizer.
-    caps_temporal_scale: float = 0.0
-    caps_spatial_scale: float = 0.0
-    caps_spatial_std: float = 0.05
     memory_size: int = -1
     discount_factor: float = 0.99
     # ── Metric source — "cmg" frozen CMG network (cmg_method selects how it's
@@ -603,7 +592,6 @@ class C2RLAgent(Agent):
         self._rl_agent = BaseRLAgent(cfg=base_cfg, models=rl_models, memory=memory, **rl_kwargs)
 
         from c2rl.agents.skrl.agent_patches import (
-            patch_caps_regularizer,
             patch_kl_logging,
             patch_kl_logging_post_update,
             patch_ppo_diagnostics,
@@ -619,12 +607,6 @@ class C2RLAgent(Agent):
         patch_sac_entropy_clamp(self._rl_agent)
         # Applied to the inner PPO/SAC sub-agent: C2RL's outer agent has no
         # .policy/.scaler of its own for the patch to hook.
-        patch_caps_regularizer(
-            self._rl_agent,
-            temporal_scale=parsed_cfg.caps_temporal_scale,
-            spatial_scale=parsed_cfg.caps_spatial_scale,
-            spatial_std=parsed_cfg.caps_spatial_std,
-        )
         _std_dev_annealing_kwargs = parsed_cfg.std_dev_annealing_kwargs
         # Anneal for PPO unless the config opts out, regardless of the policy's
         # backbone — SAC keeps this off since it learns log_std via its own

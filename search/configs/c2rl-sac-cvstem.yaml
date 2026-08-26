@@ -51,16 +51,6 @@ parameters:
     values: [true, false]
   cm.control_scaler:
     values: [0.0, 0.1, 1.0, 3.0]
-  # ── CAPS action smoothness — see c2rl-ppo-cvstem.yaml ───────────────────── #
-  # Temporal term only; the spatial term is pinned off (these envs are
-  # analytically modeled and noise-free, which is what it would buy robustness
-  # against). 0.0 stays in the ladder as the regularizer-free control.
-  agent.caps_temporal_scale:
-    values: [0.0, 0.1, 1.0, 3.0]
-  agent.caps_spatial_scale:
-    value: 0.0
-  agent.caps_spatial_std:
-    value: 0.05   # inert while caps_spatial_scale is 0.0
   # Pinned at the per-env yaml values. The earlier bayes sweep covered these
   # four thoroughly and they are not what this grid is asking about; leaving
   # them in would multiply the enumeration by ~50x. Re-open one at a time.

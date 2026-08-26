@@ -64,19 +64,6 @@ parser.add_argument("--dynamics_checkpoint", "--dynamics-checkpoint", type=str, 
                          "on Isaac Sim envs: those algorithms train no dynamics model of their own "
                          "and Isaac envs expose no analytical get_f_and_B. Ignored by C3M/C2RL "
                          "(they own their dynamics) and unnecessary for classic envs.")
-parser.add_argument("--caps_temporal_scale", "--caps-temporal-scale", type=float, default=None,
-                    help="CAPS temporal action-smoothness weight on ||pi(s_t) - pi(s_t+1)||^2, added "
-                         "to the POLICY LOSS (not the reward — the MDP/observation/dynamics are "
-                         "untouched, so the CV-STEM certificate stays valid). Overrides the yaml "
-                         "agent.caps_temporal_scale. 0 (default) disables it. "
-                         "See agent_patches.patch_caps_regularizer.")
-parser.add_argument("--caps_spatial_scale", "--caps-spatial-scale", type=float, default=None,
-                    help="CAPS spatial action-smoothness weight on ||pi(s) - pi(s_bar)||^2 with "
-                         "s_bar ~ N(s, caps_spatial_std^2) — penalizes policy state-gain rather "
-                         "than chatter. Overrides the yaml agent.caps_spatial_scale.")
-parser.add_argument("--caps_spatial_std", "--caps-spatial-std", type=float, default=None,
-                    help="Sigma for the CAPS spatial perturbation, in the units the policy sees "
-                         "in RAW observation units. Overrides the yaml agent.caps_spatial_std.")
 parser.add_argument("--eig_reshape", "--eig-reshape", type=float, default=None,
                     help="ABLATION (c2rl_ppo classic only): reshape the Mahalanobis reward's M "
                          "eigenvalue SPREAD to this target cond(M), keeping eigenvectors and "
@@ -347,7 +334,6 @@ from train_utils import (
     _evaluate_classic_path_tracking,
     _generate_ref_trajs,
     _inject_angle_idx,
-    _resolve_caps_kwargs,
     _resolve_symmetry_for_env,
     apply_agent_patches,
     apply_cli_dotted_overrides,
@@ -758,10 +744,6 @@ if _is_classic:
     )
 
     _annealing = normalize_agent_cfg(agent_cfg, algorithm=algorithm)
-    # C2RL declares caps_* as real cfg fields and patches its own inner PPO/SAC
-    # sub-agent, so its keys must stay in the dict (pop=False); skrl's Runner
-    # would reject them, so the standalone route strips them. See _resolve_caps_kwargs.
-    _caps = _resolve_caps_kwargs(agent_cfg, args_cli, pop=not _is_contraction)
 
     if _is_contraction:
         from c2rl.runners import ContractionRunner
@@ -789,8 +771,7 @@ if _is_classic:
         runner = CLActorRunner(env, agent_cfg)
 
     # Contraction algorithms already namespace their own track_data() keys.
-    apply_agent_patches(runner.agent, algorithm=algorithm, annealing=_annealing,
-                        caps=_caps, namespace=not _is_contraction)
+    apply_agent_patches(runner.agent, algorithm=algorithm, annealing=_annealing, namespace=not _is_contraction)
 
     if args_cli.checkpoint:
         runner.load(args_cli.checkpoint) if _is_contraction else runner.agent.load(args_cli.checkpoint)
@@ -1082,10 +1063,6 @@ else:
         _is_contraction = _alg in _CONTRACTION_ALGOS
         _annealing = normalize_agent_cfg(agent_cfg, algorithm=_alg)
 
-        # C2RL reads the caps_* keys off its own cfg dataclass, so they must stay
-        # in the dict there; skrl's Runner would reject them, so they are popped
-        # on the standalone branch. See _resolve_caps_kwargs.
-        _caps = _resolve_caps_kwargs(agent_cfg, args_cli, pop=not _is_contraction)
 
         if _is_contraction:
             from c2rl.runners import ContractionRunner
@@ -1107,8 +1084,7 @@ else:
         # .entropy_optimizer) — C2RLAgent applies them to its inner PPO/SAC
         # sub-agent itself, which is where they matter. Contraction algorithms
         # already namespace their own track_data() keys, hence namespace=False.
-        apply_agent_patches(runner.agent, algorithm=_alg, annealing=_annealing,
-                            caps=_caps, namespace=not _is_contraction)
+        apply_agent_patches(runner.agent, algorithm=_alg, annealing=_annealing, namespace=not _is_contraction)
 
         if _is_contraction and hasattr(runner.agent, "policy") and hasattr(runner.agent.policy, "cl_actor"):
             _orig_post = runner.agent.post_interaction

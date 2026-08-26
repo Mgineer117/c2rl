@@ -6,7 +6,7 @@ patch no-ops if the agent lacks what it needs, so calling any of them on any
 agent is safe.
 
 Invariant: every call site patches before ``agent.init()`` (where skrl
-allocates memory tensors). ``patch_caps_regularizer`` relies on it.
+allocates memory tensors).
 """
 
 from __future__ import annotations
@@ -265,7 +265,7 @@ def _resolve_x_dim(policy) -> int | None:
     squashed MLPs use ``_x_dim``; CLActorModel/SquashedCLActorModel keep it only
     on their ``cl_actor`` submodule. Missing that last case silently returned
     None for exactly the two backbones where the x-only restriction is
-    load-bearing (see patch_caps_regularizer on uref pass-through).
+    load-bearing for the uref pass-through.
     """
     for owner, attr in ((policy, "x_dim"), (policy, "_x_dim"),
                         (getattr(policy, "cl_actor", None), "x_dim")):
@@ -275,207 +275,6 @@ def _resolve_x_dim(policy) -> int | None:
     return None
 
 
-def patch_caps_regularizer(
-    agent,
-    *,
-    temporal_scale: float = 0.0,
-    spatial_scale: float = 0.0,
-    spatial_std: float = 0.05,
-    batch_size: int = 1024,
-) -> None:
-    """Add CAPS action-smoothness regularization to the policy loss.
-
-    CAPS (Mysore et al. 2021) penalizes two kinds of non-smoothness in the
-    policy mean — never the sampled action, whose noise we don't want to
-    suppress and whose gradient would fight std annealing / entropy tuning::
-
-        L_T = temporal_scale * || pi(s_t) - pi(s_{t+1}) ||^2   (chatter in time)
-        L_S = spatial_scale  * || pi(s)   - pi(s_bar)   ||^2   (high state gain)
-                                        s_bar ~ N(s, spatial_std^2)
-
-    Loss, not reward. A ``-||u_t - u_{t-1}||^2`` reward makes the return depend
-    on u_{t-1}, which isn't observed — a different, partially observed MDP the
-    critic can only model as noise. Adding u_{t-1} to the obs changes obs_dim
-    and trips the ``obs_dim == 2*x_dim + u_dim`` assertion the CLActor backbones
-    rely on. And L_S isn't expressible as a reward at all: the env has no handle
-    on pi to evaluate at a second state. As a policy-loss term CAPS keeps the
-    MDP/obs/dynamics identical, so the offline CV-STEM certificate stays valid.
-
-    States come from the agent's own memory, so CAPS inherits each algorithm's
-    data distribution rather than imposing a third: SAC's replay buffer, PPO's
-    rollout memory (exactly the on-policy batch, nothing older).
-
-    The (s_t, s_t+1) pairing needs a ``next_observations`` column that SAC
-    allocates but PPO doesn't. Allocated unconditionally here: create_tensor is
-    idempotent and the memory is still empty (see module docstring on ordering),
-    so there's no per-algorithm branch to get wrong. Filled by wrapping the
-    agent's existing ``add_samples`` — a second call would advance memory_index
-    twice and desync the columns. Read via ``sample_by_index``, never by
-    extending ``_tensors_names``: both agents unpack ``memory.sample()`` into a
-    fixed-arity tuple, so one extra name would raise.
-
-    Autoreset: a pair straddling an episode boundary isn't a real (s_t, s_t+1),
-    and smoothness across a reset is a discontinuity the policy can't control.
-    ``caps_valid`` drops both the ``terminated | truncated`` step (in-place
-    autoreset, what both families here do) and the step after a done (what a
-    next-step-autoreset env would flag), so it's correct under either convention
-    without detecting which is live. Costs <=2 transitions/episode (<1% here).
-
-    Injection point: both agents route every policy backward through
-    ``scaler.scale(loss).backward()`` right after the update's one grad-enabled
-    ``policy.act(role="policy")``. Arming on that act and consuming on the next
-    scale puts the CAPS gradient in the same backward as the policy loss, hence
-    inside grad_norm_clip — a separate ``.backward()`` would escape it. SAC's
-    critic scale precedes the act and its entropy scale follows the consume, so
-    neither is hit. PPO's kl_threshold break leaves the flag armed and it is
-    consumed by the next update's policy scale — still never a critic/entropy one.
-
-    Spatial perturbation covers only the leading ``x`` block when the policy
-    exposes an x_dim (else the whole obs). For control backbones
-    ``u = uref + feedback(x - xref)``, so perturbing uref shifts the output by
-    exactly that amount — irreducible feedforward pass-through that would floor
-    L_S and push the policy to suppress its own uref term.
-
-    ``spatial_std`` is in raw obs units (perturbation added pre-preprocessor),
-    so enabling use_state_norm would shrink what the policy actually sees.
-    Inert today (state norm off everywhere), but note a single scalar sigma
-    under-regularizes any dimension with a much wider range than the rest.
-
-    No-op unless a scale is positive, or without policy/scaler/memory (C2RL's
-    outer agent — it patches its inner sub-agent directly).
-    """
-    temporal_scale = float(temporal_scale)
-    spatial_scale = float(spatial_scale)
-    if temporal_scale <= 0.0 and spatial_scale <= 0.0:
-        return
-    policy = getattr(agent, "policy", None)
-    scaler = getattr(agent, "scaler", None)
-    memory = getattr(agent, "memory", None)
-    if policy is None or scaler is None or memory is None:
-        return
-
-    device = getattr(memory, "device", None) or next(policy.parameters()).device
-    x_dim = _resolve_x_dim(policy)
-
-    # skrl's own "no preprocessor" fallback is _empty_preprocessor, which already
-    # swallows the train= kwarg — so both branches are callable the same way.
-    def _identity(t, **_kwargs):
-        return t
-
-    obs_pre = getattr(agent, "_observation_preprocessor", None) or _identity
-    state_pre = getattr(agent, "_state_preprocessor", None) or _identity
-    _orig_act = policy.act
-
-    # ── make the (s_t, s_t+1) pairing readable from the agent's own memory ──
-    # Idempotent, so a no-op for columns the agent allocates itself in init().
-    # next_states allocates nothing when state_space is None (the norm here);
-    # sample_by_index then yields None and the policy gets states=None, exactly
-    # as in a normal update.
-    memory.create_tensor(name="next_observations", size=agent.observation_space, dtype=torch.float32)
-    memory.create_tensor(name="next_states", size=agent.state_space, dtype=torch.float32)
-    memory.create_tensor(name="caps_valid", size=1, dtype=torch.bool)
-
-    _names = ["observations", "next_observations", "caps_valid", "states", "next_states"]
-
-    _prev_done = torch.zeros((memory.num_envs, 1), dtype=torch.bool, device=device)
-    _pending: dict = {}
-
-    _orig_add_samples = memory.add_samples
-
-    def _add_samples(**tensors):
-        if _pending:
-            tensors.update(_pending)
-            _pending.clear()
-        return _orig_add_samples(**tensors)
-
-    memory.add_samples = _add_samples
-
-    _orig_record = agent.record_transition
-
-    def _record(*, observations, states, actions, rewards, next_observations, next_states,
-                terminated, truncated, infos, timestep, timesteps):
-        done = terminated | truncated
-        _pending["caps_valid"] = ~done & ~_prev_done   # see autoreset in the docstring
-        _pending["next_observations"] = next_observations
-        _pending["next_states"] = next_states
-        _prev_done.copy_(done)
-        return _orig_record(
-            observations=observations, states=states, actions=actions, rewards=rewards,
-            next_observations=next_observations, next_states=next_states,
-            terminated=terminated, truncated=truncated, infos=infos,
-            timestep=timestep, timesteps=timesteps,
-        )
-
-    agent.record_transition = _record
-
-    # ── the CAPS loss itself ────────────────────────────────────────────────
-    # _orig_act, not policy.act: the arming wrapper below must not see these
-    # forwards, and calling the pre-patch method is what keeps it from doing so.
-    def _policy_mean(obs, states):
-        inputs = {"observations": obs_pre(obs, train=False),
-                  "states": states if states is None else state_pre(states, train=False)}
-        _, outputs = _orig_act(inputs, role="policy")
-        return outputs["mean_actions"]
-
-    def _caps_loss():
-        size = len(memory)
-        if size == 0:
-            return None
-        # sample_by_index rather than sample(): the latter also overwrites
-        # memory.sampling_indexes, which belongs to the agent's own update.
-        indexes = torch.randint(0, size, (min(batch_size, size),), device=device)
-        obs, next_obs, valid, states, next_states = memory.sample_by_index(
-            names=_names, indexes=indexes
-        )[0]
-
-        mean = _policy_mean(obs, states)
-        loss = None
-
-        if temporal_scale > 0.0 and bool(valid.any()):
-            next_mean = _policy_mean(next_obs, next_states)
-            # Masked mean over surviving pairs, not sum/N — else the effective
-            # coefficient silently shrinks with the episode-boundary fraction,
-            # swinging with the termination rate as the policy improves.
-            sq = ((mean - next_mean) ** 2).sum(dim=-1, keepdim=True)
-            l_t = (sq * valid).sum() / valid.sum().clamp(min=1)
-            agent.track_data("Loss / CAPS temporal", l_t.item())
-            loss = temporal_scale * l_t
-
-        if spatial_scale > 0.0:
-            noise = torch.randn_like(obs) * spatial_std
-            if x_dim:
-                noise[:, x_dim:] = 0.0  # see docstring: never perturb xref/uref
-            bar_mean = _policy_mean(obs + noise, states)
-            l_s = ((mean - bar_mean) ** 2).sum(dim=-1).mean()
-            agent.track_data("Loss / CAPS spatial", l_s.item())
-            loss = spatial_scale * l_s if loss is None else loss + spatial_scale * l_s
-
-        return loss
-
-    # ── arm on the update's policy forward, consume on the next scale() ─────
-    armed = False
-
-    def _act(inputs, *, role: str = ""):
-        nonlocal armed
-        out = _orig_act(inputs, role=role)
-        if role == "policy" and torch.is_grad_enabled():
-            armed = True
-        return out
-
-    policy.act = _act
-
-    _orig_scale = scaler.scale
-
-    def _scale(loss):
-        nonlocal armed
-        if armed:
-            armed = False
-            caps = _caps_loss()
-            if caps is not None:
-                loss = loss + caps
-        return _orig_scale(loss)
-
-    scaler.scale = _scale
 
 
 def patch_algo_namespace(agent, algo_name: str) -> None:

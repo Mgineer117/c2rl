@@ -25,16 +25,6 @@ parameters:
   # Non-biasing running-std reward normalizer (r/std, no centering) — see rl_glue.
   agent.use_reward_norm:
     values: [true, false]
-  # ── CAPS action smoothness — see c2rl-ppo-cvstem.yaml ───────────────────── #
-  # Temporal term only; the spatial term is pinned off (these envs are
-  # analytically modeled and noise-free, which is what it would buy robustness
-  # against). 0.0 stays in the ladder as the regularizer-free control.
-  agent.caps_temporal_scale:
-    values: [0.0, 0.01, 0.05, 0.2, 1.0]
-  agent.caps_spatial_scale:
-    value: 0.0
-  agent.caps_spatial_std:
-    value: 0.05   # inert while caps_spatial_scale is 0.0
   # Pinned at the concluded search result for this env (see the per-env yaml);
   # models.policy.backbone is pinned there too and no longer swept here.
   agent.rollouts:
