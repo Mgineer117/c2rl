@@ -605,11 +605,13 @@ class C2RLAgent(Agent):
         from c2rl.agents.skrl.agent_patches import (
             patch_caps_regularizer,
             patch_kl_logging,
+            patch_kl_logging_post_update,
             patch_ppo_diagnostics,
             patch_ppo_std_annealing,
             patch_sac_entropy_clamp,
         )
         patch_kl_logging(self._rl_agent)
+        patch_kl_logging_post_update(self._rl_agent)
         patch_ppo_diagnostics(
             self._rl_agent,
             disable_advantage_norm=bool(getattr(parsed_cfg, "disable_advantage_norm", False)),

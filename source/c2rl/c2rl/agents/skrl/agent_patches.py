@@ -610,3 +610,71 @@ def patch_prune_checkpoints(agent) -> None:
             stale.unlink(missing_ok=True)
 
     agent.write_checkpoint = _pruning_write
+
+
+def patch_kl_logging_post_update(agent) -> None:
+    """Log the KL between the policy the update ENDED on and the rollout policy.
+
+    ``Policy / KL divergence`` is skrl's own number and stays as it is: the mean
+    of the per-mini-batch KLs collected during one epoch, taken from the value
+    handed to ``KLAdaptiveLR.step``. That mean is not the size of the step the
+    update actually took. It mixes early mini-batches, evaluated when the policy
+    had barely moved, with the one that tripped ``kl_threshold`` -- skrl appends
+    the KL and only then breaks (ppo.py:398 then :401), so the tripping value is
+    inside the average that gets logged. A logged 5.5 against a threshold of
+    0.032 is therefore the signature of a correct trip, not a failed one, and it
+    says nothing directly about where the policy came to rest.
+
+    ``Policy / KL divergence (post-update)`` is that missing quantity: after the
+    update returns, recompute ``log pi(a|s)`` for the whole rollout under the
+    current parameters and compare it to the ``log_prob`` stored when those
+    actions were taken. The tripping mini-batch's gradient is discarded
+    (ppo.py's break precedes ``optimizer.step``), so "current parameters" is
+    exactly the last applied iterate -- the policy the update ended on -- and
+    the stored log_prob is the policy the rollout came from.
+
+    Uses the same k3 estimator as skrl, ``(exp(r) - 1) - r``, so the two curves
+    are directly comparable, and evaluates over the full rollout rather than one
+    mini-batch, which removes the sampling noise that makes the per-mini-batch
+    value swing by orders of magnitude.
+
+    Costs one extra no-grad forward pass per update over ``rollouts x num_envs``
+    transitions.
+    """
+    import torch
+
+    memory = getattr(agent, "memory", None)
+    policy = getattr(agent, "policy", None)
+    if memory is None or policy is None or not hasattr(agent, "track_data"):
+        return
+    if getattr(agent, "_kl_post_update_logged", False):
+        return
+
+    _orig_update = agent.update
+
+    def _update_then_log_kl(*, timestep: int, timesteps: int) -> None:
+        _orig_update(timestep=timestep, timesteps=timesteps)
+        try:
+            obs = memory.get_tensor_by_name("observations")
+            actions = memory.get_tensor_by_name("actions")
+            old_log_prob = memory.get_tensor_by_name("log_prob")
+        except (KeyError, AttributeError):
+            return  # memory not laid out as PPO's; nothing to compare against
+        with torch.no_grad():
+            flat = {
+                "observations": agent._observation_preprocessor(obs.view(-1, obs.shape[-1])),
+                "taken_actions": actions.view(-1, actions.shape[-1]),
+            }
+            if hasattr(agent, "_state_preprocessor"):
+                try:
+                    states = memory.get_tensor_by_name("states")
+                    flat["states"] = agent._state_preprocessor(states.view(-1, states.shape[-1]))
+                except (KeyError, AttributeError):
+                    pass
+            _, outputs = policy.act(flat, role="policy")
+            r = outputs["log_prob"].view(-1) - old_log_prob.view(-1)
+            kl = ((torch.exp(r) - 1) - r).mean().item()
+        agent.track_data("Policy / KL divergence (post-update)", kl)
+
+    agent.update = _update_then_log_kl
+    agent._kl_post_update_logged = True
