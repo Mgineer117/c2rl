@@ -82,7 +82,36 @@ agent:
   # the LR still cannot move. Keeping a second copy here bought nothing and gave
   # this file two different `kl_threshold` keys -- the scheduler's (inert) and
   # PPO's own early stop below, which is the one that matters.
-  learning_rate_scheduler: null
+  # KLAdaptiveLR, identical on all four envs. skrl's rule, applied once per
+  # epoch with that epoch's mean KL:
+  #     kl > kl_threshold * kl_factor  ->  lr /= lr_factor  (floor min_lr)
+  #     kl < kl_threshold / kl_factor  ->  lr *= lr_factor  (ceil  max_lr)
+  # so kl_factor sets a deadband: this decreases above 0.016 and only increases
+  # below 0.001, which is the asymmetry wanted -- back off on a violation, speed
+  # up only when the step is far smaller than allowed.
+  #
+  # ONE value for every env, deliberately. The old per-env agent.kl_threshold
+  # (0.004 cartpole / 0.016 car,car-v1 / 0.032 segway) was a sweep outcome with
+  # no per-plant rationale, chosen when it was the only trust-region control and
+  # under a different learning rate, learning_epochs and initial_log_std. Deriving
+  # these from it would propagate that stale tuning; letting one controller adapt
+  # per env is what makes Policy / KL divergence (post-update) comparable across
+  # envs in the first place.
+  #
+  # lr_factor is per EPOCH, not per update: at learning_epochs 4 the rate can
+  # move 1.2^4 ~= 2.1x within a single update. skrl's default 1.5 would be 5x,
+  # which oscillates.
+  #
+  # Feeds on skrl's epoch-mean of per-mini-batch KLs -- lagging, low-biased and
+  # noisy (see patch_kl_logging_post_update). This pushes KL down on average; it
+  # does NOT bound the post-update value.
+  learning_rate_scheduler: KLAdaptiveLR
+  learning_rate_scheduler_kwargs:
+    kl_threshold: 0.004
+    kl_factor: 4
+    lr_factor: 1.2
+    min_lr: 1.0e-7
+    max_lr: 3.0e-5
   # false -> PPO learns log_std through the policy loss (stock-PPO behavior) and
   # the schedule below is ignored; true -> log_std is frozen and driven by the
   # schedule. Override per-run with --std_dev_annealing false.
