@@ -113,7 +113,19 @@ ENV_CONFIG = {
     "num_dim_x": 4,
     "num_dim_control": 1,
     "dt": 0.03,
-    "time_bound": 15.0,
+    # 60 s, not 15. At the certified lambda = 0.0514 an exponential decay needs
+    # ln(20)/lambda = 58.3 s to bring the error to 5% of its initial value; 15 s
+    # reached only exp(-0.771) = 46%, so the episode ended while the error was
+    # still half its starting size. dt stays 0.03: at 0.12 (the value that would
+    # keep 500 steps) forward-Euler error over 2 s open-loop goes from 15% to 41%
+    # on this unstable plant, and lambda*dt from 0.096 to 0.383.
+    #
+    # The CM dataset does NOT need regenerating: its cache key is
+    # (lbd, w_lb, w_ub, eps, solver, N, r_scaler, chi/nu_weight, wdot_dt,
+    # random_ratio, wdot_trajectory, temporal_dt) -- no env dt and no time_bound --
+    # and the SDP samples the state box with continuous-time Jacobians, so lambda
+    # is a rate in 1/s that episode length never enters. Verified by preflight.
+    "time_bound": 60.0,
     # Episodes run the full horizon rather than ending on the first excursion
     # from the termination box. This plant is unstable and pi starts from random
     # init (u = uref + pi, no warm-start), so with the box armed every episode

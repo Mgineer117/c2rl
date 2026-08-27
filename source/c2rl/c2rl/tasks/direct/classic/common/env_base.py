@@ -9,9 +9,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from c2rl.agents.skrl.ref_window import RefWindow
-from c2rl.tasks.direct.common.state_guard import carry_forward_nonfinite
-from c2rl.tasks.direct.common.termination_box import TerminationBoxMixin
+from contractionRL.agents.skrl.ref_window import RefWindow
+from contractionRL.tasks.direct.common.state_guard import carry_forward_nonfinite
+from contractionRL.tasks.direct.common.termination_box import TerminationBoxMixin
 
 
 class BaseEnv(TerminationBoxMixin, gym.Env):
@@ -122,7 +122,7 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
                 raise ValueError(
                     f"state_names has {len(self.state_names)} entries but "
                     f"num_dim_x={self.num_dim_x}: {self.state_names}")
-            from c2rl.agents.skrl.state_symmetry import StateSymmetry
+            from contractionRL.agents.skrl.state_symmetry import StateSymmetry
             sym = StateSymmetry.from_names(self.state_names)
             self.angle_idx = list(sym.angle_idx)
             self.pos_dimension = sym.pos_dimension
@@ -172,8 +172,9 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         # Buffers
         self.time_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.x_t = torch.zeros(self.num_envs, self.num_dim_x, dtype=torch.float32, device=self.device)
-        self.xref = torch.zeros(self.num_envs, self.max_episode_len, self.num_dim_x, dtype=torch.float32, device=self.device)
-        self.uref = torch.zeros(self.num_envs, self.max_episode_len, self.num_dim_control, dtype=torch.float32, device=self.device)
+        # Reference is generated PAST the episode end, so the window never has to
+        # clamp — see _size_reference_buffers.
+        self._size_reference_buffers()
         self.init_tracking_error = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
         self.episode_reward = torch.zeros(self.num_envs, dtype=torch.float32, device=self.device)
 
@@ -351,7 +352,7 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         batched SPD inverse from every env step. cmg_method="ccm" emits W (its
         C1/C2 losses are written in W), so M = W^-1 is formed here.
         """
-        from c2rl.agents.skrl.math_utils import bound_W, spd_inverse
+        from contractionRL.agents.skrl.math_utils import bound_W, spd_inverse
         raw, _ = self.ccm_gen(x)
         out = bound_W(raw, self.w_lb, self.num_dim_x,
                       getattr(self.ccm_gen, "bounded", False))
@@ -812,6 +813,20 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
                                     length=int(length), offset=int(offset))
         self.observation_space = self.ref_window.space(
             self.X_MIN, self.X_MAX, self.UREF_MIN, self.UREF_MAX)
+        # The window length just changed, so the reference has to be regenerated at
+        # the new span -- otherwise the tail of every window would clamp onto
+        # xref[-1] again, which is the padding this sizing exists to remove.
+        # Safe here because this method is documented as pre-agent-construction.
+        self._size_reference_buffers()
+        self._fixed_xref = torch.zeros_like(self.xref)
+        self._fixed_uref = torch.zeros_like(self.uref)
+        if hasattr(self, "_ref_fixed"):
+            self._ref_fixed[:] = False
+        self._ref_pool = None
+        print(f"[BaseEnv] reference generated to {self.ref_gen_len} steps for a "
+              f"{self.max_episode_len}-step episode "
+              f"({self.ref_gen_len - self.max_episode_len} beyond the end, so the "
+              f"window never clamps)")
         print(f"[BaseEnv] reference window: length={self.ref_window.length} "
               f"offset={self.ref_window.offset} (spans "
               f"{(self.ref_window.length - 1) * self.ref_window.offset} steps) -> "
@@ -978,6 +993,45 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
     #     xref_rel = self.wrap_angles(raw_rel).reshape(self.num_envs, p, -1)  # relative to current x
     #     return torch.cat([self.x_t, xref_rel.reshape(self.num_envs, -1)], dim=-1)
 #
+    def _size_reference_buffers(self) -> None:
+        """Allocate ``xref``/``uref`` long enough that the window never clamps.
+
+        The episode runs ``max_episode_len`` steps, but the window at the last of
+        them still reaches ``max_episode_len - 1 + (length-1)*offset``. Generating
+        only ``max_episode_len`` points forces every index past the end to clamp
+        onto ``xref[-1]``, which pads the observation with a synthetic constant
+        tail whose length grows as the episode advances. Generating to
+        ``ref_gen_len`` instead makes every window entry real reference data.
+
+        Why that matters beyond tidiness: the padded tail is not reference the
+        plant ever tracks, so the actor's window encoder spends capacity on a
+        signal that carries no information about the task, and its content
+        changes with ``t`` even when the underlying reference does not.
+
+        What it does NOT change is the Markov requirement. The episodic return
+        from ``t`` touches ``xref[t .. max_episode_len-1]``, so the window still
+        has to be at least ``max_episode_len`` long for the value to be a
+        function of the observation -- generating further ahead removes the
+        padding, it does not license a shorter window. ``check_markov`` is still
+        asked about ``max_episode_len`` for exactly that reason.
+
+        Strictly, the observation process is no longer closed under the shift:
+        ``xrefs_{t+1}`` needs ``xref[t + length*offset]``, which is not in
+        ``s_t``. That index is beyond the episode end, so it never enters any
+        reward -- it is reward-irrelevant nuisance rather than hidden state the
+        value depends on, which is the opposite of truncating the window inside
+        the horizon.
+        """
+        L, off = self.ref_window.length, self.ref_window.offset
+        self.ref_gen_len = int(self.max_episode_len + (L - 1) * off)
+        # The generation loop iterates over self.t, so it has to cover the same span.
+        self.t = torch.arange(self.ref_gen_len, device=self.device,
+                              dtype=torch.float32) * self.dt
+        self.xref = torch.zeros(self.num_envs, self.ref_gen_len, self.num_dim_x,
+                                dtype=torch.float32, device=self.device)
+        self.uref = torch.zeros(self.num_envs, self.ref_gen_len, self.num_dim_control,
+                                dtype=torch.float32, device=self.device)
+
     def construct_state(self, x: torch.Tensor):
         """The observation ``s = {x, xrefs, urefs}``, flattened in skrl's
         sorted-key order (see ``RefWindow.split`` — the one place that layout
@@ -999,7 +1053,9 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         """
         idx = torch.clamp(self.time_steps, max=self.max_episode_len - 1)
         env_idx = torch.arange(self.num_envs, device=self.device).unsqueeze(-1)
-        widx = self.ref_window.window_indices(idx, self.max_episode_len)  # (N, L)
+        # ref_gen_len, not max_episode_len: the reference extends past the episode
+        # end precisely so these indices are real data instead of clamped padding.
+        widx = self.ref_window.window_indices(idx, self.ref_gen_len)  # (N, L)
         return {
             "x": x,
             "xrefs": self.xref[env_idx, widx],                            # (N, L, x_dim)
