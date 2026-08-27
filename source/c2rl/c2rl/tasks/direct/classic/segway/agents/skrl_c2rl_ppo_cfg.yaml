@@ -65,7 +65,21 @@ memory:
 agent:
   class: C2RL-PPO
   # PPO shared config (the single deployed policy's PPO sub-agent).
-  rollouts: 4   # Number of environment steps per parallel environment per update
+  # 24, matching cartpole and car-v1. Was 4, which gave segway a 4096-sample
+  # batch -- 6x smaller than the others -- and a 1024-sample mini-batch, so it had
+  # the noisiest gradient per step AND the least reliable per-mini-batch KL check,
+  # which is why its post-update KL sat highest of the four despite having the
+  # LARGEST sigma (0.15 vs cartpole's 0.0001, and KL scales as 1/sigma^2, so sigma
+  # was suppressing it, not inflating it).
+  #
+  # Consequence to keep in view: an update now fires every 24 steps instead of
+  # every 4, so 500000 timesteps is ~20.8k updates rather than ~125k, and total
+  # gradient steps fall from ~2.0M to ~333k. More data per step, far fewer steps.
+  #
+  # mini_batches stays 4, so the mini-batch is 6144 -- twice cartpole's 3072.
+  # Measured 6.80 GiB peak through the stride-3 GRU window encoder against a
+  # 22 GiB A10, so it fits with room.
+  rollouts: 24   # Number of environment steps per parallel environment per update
   learning_epochs: 4  # Number of gradient descent passes over the collected batch
   mini_batches: 4  # Number of subsets to divide the batch into for stochastic optimization
   gae_lambda: 0.99  # Lambda parameter for Generalized Advantage Estimation (GAE)
