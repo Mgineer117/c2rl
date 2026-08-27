@@ -9,9 +9,9 @@ import gymnasium as gym
 import numpy as np
 import torch
 
-from contractionRL.agents.skrl.ref_window import RefWindow
-from contractionRL.tasks.direct.common.state_guard import carry_forward_nonfinite
-from contractionRL.tasks.direct.common.termination_box import TerminationBoxMixin
+from c2rl.agents.skrl.ref_window import RefWindow
+from c2rl.tasks.direct.common.state_guard import carry_forward_nonfinite
+from c2rl.tasks.direct.common.termination_box import TerminationBoxMixin
 
 
 class BaseEnv(TerminationBoxMixin, gym.Env):
@@ -122,7 +122,7 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
                 raise ValueError(
                     f"state_names has {len(self.state_names)} entries but "
                     f"num_dim_x={self.num_dim_x}: {self.state_names}")
-            from contractionRL.agents.skrl.state_symmetry import StateSymmetry
+            from c2rl.agents.skrl.state_symmetry import StateSymmetry
             sym = StateSymmetry.from_names(self.state_names)
             self.angle_idx = list(sym.angle_idx)
             self.pos_dimension = sym.pos_dimension
@@ -352,7 +352,7 @@ class BaseEnv(TerminationBoxMixin, gym.Env):
         batched SPD inverse from every env step. cmg_method="ccm" emits W (its
         C1/C2 losses are written in W), so M = W^-1 is formed here.
         """
-        from contractionRL.agents.skrl.math_utils import bound_W, spd_inverse
+        from c2rl.agents.skrl.math_utils import bound_W, spd_inverse
         raw, _ = self.ccm_gen(x)
         out = bound_W(raw, self.w_lb, self.num_dim_x,
                       getattr(self.ccm_gen, "bounded", False))
